@@ -1,0 +1,13 @@
+{
+  "name": "mocidade-lembretes",
+  "version": "1.0.0",
+  "description": "Lembretes automáticos de eventos via WhatsApp",
+  "main": "scripts/enviar-lembretes.js",
+  "scripts": {
+    "lembretes": "node scripts/enviar-lembretes.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "axios": "^1.6.0"
+  }
+}

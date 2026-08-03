@@ -1,0 +1,41 @@
+name: Notificacoes de Eventos
+
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+jobs:
+  notificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Criar e rodar script
+        run: |
+          npm install firebase-admin
+          cat > enviar.js << 'EOF'
+          const admin = require('firebase-admin');
+          const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          admin.initializeApp({ credential: admin.credential.cert(sa), databaseURL: 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com' });
+          async function run() {
+            const db = admin.database();
+            const d = new Date(); d.setDate(d.getDate() + 1);
+            const amanha = d.toISOString().split('T')[0];
+            console.log('Verificando:', amanha);
+            const evSnap = await db.ref('app/events').get();
+            if (!evSnap.exists()) return console.log('Sem eventos');
+            const evs = Object.values(evSnap.val()).filter(e => e && e.data === amanha);
+            if (!evs.length) return console.log('Nenhum evento amanha');
+            const tokSnap = await db.ref('dispositivos').get();
+            if (!tokSnap.exists()) return console.log('Sem dispositivos');
+            const tokens = Object.values(tokSnap.val()).map(d => d.token).filter(Boolean);
+            for (const ev of evs) {
+              const body = ev.titulo + (ev.horario ? ' as ' + ev.horario : '') + (ev.local ? ' - ' + ev.local : '');
+              const r = await admin.messaging().sendEachForMulticast({ tokens, notification: { title: 'Evento amanha - Reuniao de Jovens', body }, webpush: { notification: { requireInteraction: true } } });
+              console.log('Enviados:', r.successCount, '| Falhas:', r.failureCount);
+            }
+          }
+          run().catch(console.error);
+          EOF
+          node enviar.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

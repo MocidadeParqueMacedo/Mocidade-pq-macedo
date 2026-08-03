@@ -1,0 +1,66 @@
+name: Notificações de Eventos
+
+on:
+  schedule:
+    - cron: '0 21 * * *'   # Todo dia às 18h Brasília (21h UTC)
+  workflow_dispatch:        # Botão para testar manualmente no GitHub
+
+jobs:
+  notificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar dependências
+        run: npm install firebase-admin
+
+      - name: Enviar notificações
+        run: |
+          cat << 'SCRIPT' > enviar.js
+          const admin = require('firebase-admin');
+
+          const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          admin.initializeApp({ credential: admin.credential.cert(serviceAccount),
+            databaseURL: 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com' });
+
+          async function main() {
+            const db = admin.database();
+
+            // Calcula amanhã
+            const amanha = new Date();
+            amanha.setDate(amanha.getDate() + 1);
+            const amanhaISO = amanha.toISOString().split('T')[0];
+            console.log('Verificando eventos para:', amanhaISO);
+
+            // Busca eventos
+            const evSnap = await db.ref('app/events').get();
+            if (!evSnap.exists()) return console.log('Sem eventos no banco.');
+            const eventos = Object.values(evSnap.val()).filter(e => e && e.data === amanhaISO);
+            if (!eventos.length) return console.log('Nenhum evento amanhã.');
+            console.log(eventos.length, 'evento(s) encontrado(s).');
+
+            // Busca tokens FCM
+            const tokSnap = await db.ref('dispositivos').get();
+            if (!tokSnap.exists()) return console.log('Nenhum dispositivo cadastrado.');
+            const tokens = Object.values(tokSnap.val()).map(d => d.token).filter(Boolean);
+            if (!tokens.length) return console.log('Nenhum token FCM.');
+            console.log(tokens.length, 'dispositivo(s).');
+
+            // Envia para cada evento
+            for (const ev of eventos) {
+              const corpo = ev.titulo
+                + (ev.horario ? ' às ' + ev.horario : '')
+                + (ev.local   ? ' — '  + ev.local   : '');
+              const res = await admin.messaging().sendEachForMulticast({
+                tokens,
+                notification: { title: '📅 Evento amanhã!', body: corpo },
+                webpush: { notification: { requireInteraction: true,
+                  icon: 'https://mocidadeparquemacedo.github.io/icon-192.png' } }
+              });
+              console.log('Enviados:', res.successCount, '| Falhas:', res.failureCount);
+            }
+          }
+
+          main().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
+          SCRIPT
+          node enviar.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

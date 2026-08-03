@@ -1,72 +1,45 @@
 name: Notificacoes de Eventos
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 21 * * *'
-  workflow_dispatch:
 
 jobs:
   notificar:
     runs-on: ubuntu-latest
     steps:
-      - name: Instalar dependencias
+      - name: Instalar
         run: pip install firebase-admin --quiet
 
-      - name: Enviar notificacoes
-        shell: python3 {0}
+      - name: Rodar
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
+          python3 - << 'PYEOF'
           import os, json
           from datetime import datetime, timedelta
           import firebase_admin
           from firebase_admin import credentials, db, messaging
 
-          sa = json.loads(os.environ['FIREBASE_SERVICE_ACCOUNT'])
-          cred = credentials.Certificate(sa)
-          firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
-          })
+          sa = json.loads(os.environ['SA'])
+          firebase_admin.initialize_app(credentials.Certificate(sa), {'databaseURL': 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'})
 
           amanha = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
-          print('Verificando eventos para:', amanha)
+          print('Amanha:', amanha)
 
-          eventos_ref = db.reference('app/events').get()
-          if not eventos_ref:
-            print('Nenhum evento cadastrado.'); exit()
+          evs_raw = db.reference('app/events').get() or {}
+          evs = [e for e in (evs_raw.values() if isinstance(evs_raw, dict) else []) if e and e.get('data') == amanha]
+          print('Eventos:', len(evs))
+          if not evs: exit()
 
-          evs = [e for e in (eventos_ref.values() if isinstance(eventos_ref, dict) else eventos_ref) if e and e.get('data') == amanha]
-          if not evs:
-            print('Nenhum evento amanha.'); exit()
-          print(f'{len(evs)} evento(s) encontrado(s).')
-
-          disp_ref = db.reference('dispositivos').get()
-          if not disp_ref:
-            print('Nenhum dispositivo cadastrado.'); exit()
-
-          tokens = [d['token'] for d in disp_ref.values() if d and d.get('token')]
-          if not tokens:
-            print('Nenhum token FCM.'); exit()
-          print(f'{len(tokens)} dispositivo(s).')
+          disp = db.reference('dispositivos').get() or {}
+          tokens = [d['token'] for d in (disp.values() if isinstance(disp, dict) else []) if d and d.get('token')]
+          print('Tokens:', len(tokens))
+          if not tokens: exit()
 
           for ev in evs:
-            titulo = ev.get('titulo', 'Evento')
-            horario = f" as {ev['horario']}" if ev.get('horario') else ''
-            local = f" - {ev['local']}" if ev.get('local') else ''
-            corpo = f"{titulo}{horario}{local}"
-
-            msg = messaging.MulticastMessage(
-              tokens=tokens,
-              notification=messaging.Notification(
-                title='Evento amanha - Reuniao de Jovens',
-                body=corpo
-              ),
-              webpush=messaging.WebpushConfig(
-                notification=messaging.WebpushNotification(
-                  require_interaction=True,
-                  icon='https://mocidadeparquemacedo.github.io/icon-192.png'
-                )
-              )
-            )
-            resp = messaging.send_each_for_multicast(msg)
-            print(f'Enviados: {resp.success_count} | Falhas: {resp.failure_count}')
+            corpo = ev.get('titulo','') + (' as ' + ev['horario'] if ev.get('horario') else '') + (' - ' + ev['local'] if ev.get('local') else '')
+            r = messaging.send_each_for_multicast(messaging.MulticastMessage(tokens=tokens, notification=messaging.Notification(title='Evento amanha!', body=corpo)))
+            print('OK:', r.success_count, 'Falha:', r.failure_count)
+          PYEOF

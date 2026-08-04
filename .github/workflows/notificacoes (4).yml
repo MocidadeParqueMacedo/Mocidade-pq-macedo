@@ -1,0 +1,75 @@
+name: Notificacoes de Eventos
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 21 * * *'
+
+jobs:
+  notificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar dependencias
+        run: pip install firebase-admin requests --quiet
+
+      - name: Enviar notificacoes
+        shell: python3 {0}
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          import os, json, requests
+          from datetime import datetime, timedelta
+          import firebase_admin
+          from firebase_admin import credentials, messaging
+
+          # Inicializa Firebase Admin (apenas para FCM, sem RTDB)
+          sa = json.loads(os.environ['FIREBASE_SERVICE_ACCOUNT'])
+          firebase_admin.initialize_app(credentials.Certificate(sa))
+
+          # Calcula amanha
+          amanha = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+          print('Verificando eventos para:', amanha)
+
+          # Le eventos via REST API publica (regras sao public read)
+          url_base = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
+          evs_raw = requests.get(f'{url_base}/app/events.json').json()
+          if not evs_raw:
+            print('Nenhum evento cadastrado.'); exit()
+
+          evs = [e for e in (evs_raw.values() if isinstance(evs_raw, dict) else []) if e and e.get('data') == amanha]
+          if not evs:
+            print('Nenhum evento amanha.'); exit()
+          print(f'{len(evs)} evento(s) amanha.')
+
+          # Le tokens via REST API publica
+          disp_raw = requests.get(f'{url_base}/dispositivos.json').json()
+          if not disp_raw:
+            print('Nenhum dispositivo.'); exit()
+
+          tokens = [d['token'] for d in disp_raw.values() if d and d.get('token')]
+          if not tokens:
+            print('Nenhum token FCM.'); exit()
+          print(f'{len(tokens)} dispositivo(s).')
+
+          # Envia notificacoes via FCM
+          for ev in evs:
+            corpo = ev.get('titulo', 'Evento')
+            if ev.get('horario'): corpo += ' as ' + ev['horario']
+            if ev.get('local'):   corpo += ' - ' + ev['local']
+
+            resp = messaging.send_each_for_multicast(messaging.MulticastMessage(
+              tokens=tokens,
+              notification=messaging.Notification(
+                title='Evento amanha - Reuniao de Jovens',
+                body=corpo
+              ),
+              webpush=messaging.WebpushConfig(
+                notification=messaging.WebpushNotification(
+                  require_interaction=True,
+                  icon='https://mocidadeparquemacedo.github.io/icon-192.png'
+                )
+              )
+            ))
+            print(f'Enviados: {resp.success_count} | Falhas: {resp.failure_count}')
+
+          print('Concluido!')

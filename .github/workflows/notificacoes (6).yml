@@ -1,0 +1,52 @@
+name: Notificacoes de Eventos
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 21 * * *'
+
+jobs:
+  notificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar
+        run: pip install pywebpush requests --quiet
+
+      - name: Enviar
+        shell: python3 {0}
+        env:
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+        run: |
+          import os, json, requests
+          from datetime import datetime, timedelta
+          from pywebpush import webpush, WebPushException
+
+          VAPID_PRIVATE = os.environ['VAPID_PRIVATE_KEY']
+          VAPID_CLAIMS  = {'sub': 'mailto:rdj.parquemacedo@gmail.com'}
+          DB = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
+
+          amanha = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+          print('Amanha:', amanha)
+
+          evs_raw = requests.get(f'{DB}/app/events.json').json() or {}
+          evs = [e for e in (evs_raw.values() if isinstance(evs_raw,dict) else []) if e and e.get('data')==amanha]
+          if not evs: print('Nenhum evento amanha.'); exit()
+          print(f'{len(evs)} evento(s).')
+
+          disp_raw = requests.get(f'{DB}/dispositivos.json').json() or {}
+          disps = [d for d in (disp_raw.values() if isinstance(disp_raw,dict) else []) if d and d.get('endpoint')]
+          if not disps: print('Nenhum dispositivo.'); exit()
+          print(f'{len(disps)} dispositivo(s).')
+
+          for ev in evs:
+            corpo = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
+            payload = json.dumps({'title':'Evento amanha!','body':corpo,'tag':f"ev-{ev.get('id',0)}"})
+            for d in disps:
+              try:
+                webpush(
+                  subscription_info={'endpoint':d['endpoint'],'keys':{'p256dh':d.get('p256dh',''),'auth':d.get('auth','')}},
+                  data=payload, vapid_private_key=VAPID_PRIVATE, vapid_claims=VAPID_CLAIMS
+                )
+                print('✅ OK')
+              except WebPushException as ex:
+                print('⚠️', str(ex)[:80])

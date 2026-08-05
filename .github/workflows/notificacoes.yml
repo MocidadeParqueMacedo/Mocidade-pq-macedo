@@ -26,13 +26,16 @@ jobs:
           DB = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
 
           amanha = (datetime.now(timezone.utc) + timedelta(hours=-3, days=1)).strftime('%Y-%m-%d')
-          print('Amanha:', amanha)
+          em7dias = (datetime.now(timezone.utc) + timedelta(hours=-3, days=7)).strftime('%Y-%m-%d')
+          print('Amanha:', amanha, '| Em 7 dias:', em7dias)
 
           raw = requests.get(f'{DB}/app/events.json').json()
           if not raw: print('Sem eventos.'); exit()
           todos = list(raw.values()) if isinstance(raw,dict) else [e for e in raw if e]
-          evs = [e for e in todos if e and e.get('data')==amanha]
-          print(f'Eventos amanha: {len(evs)}')
+          evs_amanha = [e for e in todos if e and e.get('data')==amanha]
+          evs_semana = [e for e in todos if e and e.get('data')==em7dias]
+          evs = evs_amanha + evs_semana
+          print(f'Eventos amanha: {len(evs_amanha)} | Em 7 dias: {len(evs_semana)}')
           if not evs: exit()
 
           raw2 = requests.get(f'{DB}/dispositivos.json').json()
@@ -43,8 +46,10 @@ jobs:
           if not disps: exit()
 
           for ev in evs:
+            dias_restantes = 1 if ev.get('data')==amanha else 7
+            prefixo = 'Evento amanha!' if dias_restantes==1 else 'Evento em 1 semana!'
             corpo = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
-            payload = json.dumps({'title':'Evento amanha!','body':corpo})
+            payload = json.dumps({'title': prefixo, 'body': corpo})
             print(f'Enviando: {corpo}')
             for d in disps:
               try:

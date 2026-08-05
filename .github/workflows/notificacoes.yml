@@ -25,18 +25,20 @@ jobs:
           CLAIMS  = {'sub': 'mailto:rdj.parquemacedo@gmail.com'}
           DB = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
 
-          amanha = (datetime.now(timezone.utc) + timedelta(hours=-3, days=1)).strftime('%Y-%m-%d')
-          em7dias = (datetime.now(timezone.utc) + timedelta(hours=-3, days=7)).strftime('%Y-%m-%d')
+          agora_br = datetime.now(timezone.utc) + timedelta(hours=-3)
+          amanha   = (agora_br + timedelta(days=1)).strftime('%Y-%m-%d')
+          em7dias  = (agora_br + timedelta(days=7)).strftime('%Y-%m-%d')
           print('Amanha:', amanha, '| Em 7 dias:', em7dias)
 
           raw = requests.get(f'{DB}/app/events.json').json()
           if not raw: print('Sem eventos.'); exit()
           todos = list(raw.values()) if isinstance(raw,dict) else [e for e in raw if e]
+
           evs_amanha = [e for e in todos if e and e.get('data')==amanha]
           evs_semana = [e for e in todos if e and e.get('data')==em7dias]
-          evs = evs_amanha + evs_semana
-          print(f'Eventos amanha: {len(evs_amanha)} | Em 7 dias: {len(evs_semana)}')
-          if not evs: exit()
+          evs = [(ev, 1) for ev in evs_amanha] + [(ev, 7) for ev in evs_semana]
+          print(f'Amanha: {len(evs_amanha)} | Em 7 dias: {len(evs_semana)}')
+          if not evs: print('Nenhum evento.'); exit()
 
           raw2 = requests.get(f'{DB}/dispositivos.json').json()
           if not raw2: print('Sem dispositivos.'); exit()
@@ -45,12 +47,13 @@ jobs:
           print(f'Dispositivos: {len(disps)}')
           if not disps: exit()
 
-          for ev in evs:
-            dias_restantes = 1 if ev.get('data')==amanha else 7
-            prefixo = 'Evento amanha!' if dias_restantes==1 else 'Evento em 1 semana!'
-            corpo = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
-            payload = json.dumps({'title': prefixo, 'body': corpo})
-            print(f'Enviando: {corpo}')
+          endpoints_mortos = []
+
+          for ev, dias in evs:
+            titulo = 'Evento amanha!' if dias==1 else 'Evento em 1 semana!'
+            corpo  = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
+            payload = json.dumps({'title': titulo, 'body': corpo})
+            print(f'Enviando ({dias}d): {corpo}')
             for d in disps:
               try:
                 webpush(
@@ -58,11 +61,23 @@ jobs:
                     'endpoint': d['endpoint'],
                     'keys': {'p256dh': d.get('p256dh',''), 'auth': d.get('auth','')}
                   },
-                  data=payload,
-                  vapid_private_key=PRIVATE,
-                  vapid_claims=CLAIMS
+                  data=payload, vapid_private_key=PRIVATE, vapid_claims=CLAIMS
                 )
-                print('OK:', d['endpoint'][:50])
+                print('OK:', d['endpoint'][:60])
               except WebPushException as ex:
-                print('Falha:', str(ex)[:100])
+                msg = str(ex)
+                if '410' in msg or '404' in msg:
+                  endpoints_mortos.append(d['endpoint'])
+                else:
+                  print('Falha:', msg[:80])
+
+          # Remove subscriptions expiradas do Firebase automaticamente
+          if endpoints_mortos:
+            raw3 = requests.get(f'{DB}/dispositivos.json').json() or {}
+            disp_dict = raw3 if isinstance(raw3,dict) else {}
+            for k, v in disp_dict.items():
+              if v and v.get('endpoint') in endpoints_mortos:
+                requests.delete(f'{DB}/dispositivos/{k}.json')
+                print('Subscription expirada removida:', k[:20])
+
           print('Concluido!')

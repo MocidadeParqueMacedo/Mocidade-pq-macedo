@@ -3,7 +3,7 @@ name: Notificacoes de Eventos
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 21 * * *'
+    - cron: '0 11 * * *'   # 8h da manhã (horário de Brasília = 11h UTC)
 
 jobs:
   notificar:
@@ -23,59 +23,95 @@ jobs:
 
           PRIVATE = os.environ['VAPID_PRIVATE_KEY']
           CLAIMS  = {'sub': 'mailto:rdj.parquemacedo@gmail.com'}
-          DB = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
+          DB      = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
 
           agora_br = datetime.now(timezone.utc) + timedelta(hours=-3)
+          hoje     = agora_br.strftime('%Y-%m-%d')
           amanha   = (agora_br + timedelta(days=1)).strftime('%Y-%m-%d')
           em7dias  = (agora_br + timedelta(days=7)).strftime('%Y-%m-%d')
-          print('Amanha:', amanha, '| Em 7 dias:', em7dias)
+          hoje_md    = agora_br.strftime('%m-%d')
+          amanha_md  = (agora_br + timedelta(days=1)).strftime('%m-%d')
 
-          raw = requests.get(f'{DB}/app/events.json').json()
-          if not raw: print('Sem eventos.'); exit()
-          todos = list(raw.values()) if isinstance(raw,dict) else [e for e in raw if e]
+          print(f'Hoje: {hoje} | Amanha: {amanha} | Em 7 dias: {em7dias}')
 
-          evs_amanha = [e for e in todos if e and e.get('data')==amanha]
-          evs_semana = [e for e in todos if e and e.get('data')==em7dias]
-          evs = [(ev, 1) for ev in evs_amanha] + [(ev, 7) for ev in evs_semana]
-          print(f'Amanha: {len(evs_amanha)} | Em 7 dias: {len(evs_semana)}')
-          if not evs: print('Nenhum evento.'); exit()
-
-          raw2 = requests.get(f'{DB}/dispositivos.json').json()
-          if not raw2: print('Sem dispositivos.'); exit()
-          disps = list(raw2.values()) if isinstance(raw2,dict) else [d for d in raw2 if d]
+          # ── Busca dispositivos ───────────────────────────────────────────────
+          raw_d = requests.get(f'{DB}/dispositivos.json').json()
+          if not raw_d: print('Sem dispositivos.'); exit()
+          disps = list(raw_d.values()) if isinstance(raw_d,dict) else [d for d in raw_d if d]
           disps = [d for d in disps if d and d.get('endpoint') and d.get('p256dh')]
           print(f'Dispositivos: {len(disps)}')
           if not disps: exit()
 
           endpoints_mortos = []
 
-          for ev, dias in evs:
-            titulo = 'Evento amanha!' if dias==1 else 'Evento em 1 semana!'
-            corpo  = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
-            payload = json.dumps({'title': titulo, 'body': corpo, 'tag': f"ev-{ev.get('id',0)}-{dias}d"})
-            print(f'Enviando ({dias}d): {corpo}')
+          def enviar_push(titulo, corpo, tag):
+            payload = json.dumps({'title': titulo, 'body': corpo, 'tag': tag})
+            print(f'[{tag}] {titulo}: {corpo}')
             for d in disps:
               try:
                 webpush(
-                  subscription_info={
-                    'endpoint': d['endpoint'],
-                    'keys': {'p256dh': d.get('p256dh',''), 'auth': d.get('auth','')}
-                  },
+                  subscription_info={'endpoint':d['endpoint'],'keys':{'p256dh':d.get('p256dh',''),'auth':d.get('auth','')}},
                   data=payload, vapid_private_key=PRIVATE, vapid_claims=CLAIMS
                 )
-                print('OK:', d['endpoint'][:60])
+                print('  OK')
               except WebPushException as ex:
                 msg = str(ex)
                 if '410' in msg or '404' in msg:
                   endpoints_mortos.append(d['endpoint'])
                 else:
-                  print('Falha:', msg[:80])
+                  print('  Falha:', msg[:60])
 
-          # Remove subscriptions expiradas do Firebase automaticamente
+          # ── EVENTOS ─────────────────────────────────────────────────────────
+          raw_e = requests.get(f'{DB}/app/events.json').json()
+          if raw_e:
+            todos_ev = list(raw_e.values()) if isinstance(raw_e,dict) else [e for e in raw_e if e]
+            for ev in todos_ev:
+              if not ev: continue
+              data_ev = ev.get('data','')
+              corpo   = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
+              if data_ev == amanha:
+                enviar_push('📅 Evento amanha!', corpo, f"ev-{ev.get('id',0)}-1d")
+              elif data_ev == em7dias:
+                enviar_push('📅 Evento em 1 semana!', corpo, f"ev-{ev.get('id',0)}-7d")
+
+          # ── ANIVERSÁRIOS ─────────────────────────────────────────────────────
+          raw_m = requests.get(f'{DB}/app/members.json').json()
+          if raw_m:
+            membros = list(raw_m.values()) if isinstance(raw_m,dict) else [m for m in raw_m if m]
+            for m in membros:
+              if not m or not m.get('nome') or not m.get('nascimento'): continue
+              nasc = m['nascimento']
+              # Suporta YYYY-MM-DD e DD/MM/YYYY
+              try:
+                if '-' in nasc:
+                  parts = nasc.split('-')
+                  nasc_md = f"{parts[1]}-{parts[2]}"
+                  ano_nasc = int(parts[0])
+                else:
+                  parts = nasc.split('/')
+                  nasc_md = f"{parts[1]}-{parts[0]}"
+                  ano_nasc = int(parts[2])
+              except:
+                continue
+              nome  = m['nome'].split()[0]
+              idade = agora_br.year - ano_nasc
+              if nasc_md == amanha_md:
+                enviar_push(
+                  f'🎂 Aniversário amanhã!',
+                  f'Amanha {nome} completa {idade} anos! Nao se esqueca de dar os parabens 🎉',
+                  f'aniv-{m.get("id",nome)}-amanha'
+                )
+              elif nasc_md == hoje_md:
+                enviar_push(
+                  f'🎉 Feliz Aniversário!',
+                  f'Hoje {nome} completa {idade} anos! Nao se esqueca de dar os parabens 🥳',
+                  f'aniv-{m.get("id",nome)}-hoje'
+                )
+
+          # ── Remove subscriptions expiradas ───────────────────────────────────
           if endpoints_mortos:
             raw3 = requests.get(f'{DB}/dispositivos.json').json() or {}
-            disp_dict = raw3 if isinstance(raw3,dict) else {}
-            for k, v in disp_dict.items():
+            for k, v in (raw3.items() if isinstance(raw3,dict) else []):
               if v and v.get('endpoint') in endpoints_mortos:
                 requests.delete(f'{DB}/dispositivos/{k}.json')
                 print('Subscription expirada removida:', k[:20])

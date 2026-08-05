@@ -3,7 +3,7 @@ name: Notificacoes de Eventos
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 11 * * *'   # 8h da manhã (horário de Brasília = 11h UTC)
+    - cron: '0 11 * * *'   # 8h da manhã (Brasília = 11h UTC)
 
 jobs:
   notificar:
@@ -25,14 +25,14 @@ jobs:
           CLAIMS  = {'sub': 'mailto:rdj.parquemacedo@gmail.com'}
           DB      = 'https://mocidade-parque-macedo-default-rtdb.firebaseio.com'
 
-          agora_br = datetime.now(timezone.utc) + timedelta(hours=-3)
-          hoje     = agora_br.strftime('%Y-%m-%d')
-          amanha   = (agora_br + timedelta(days=1)).strftime('%Y-%m-%d')
-          em7dias  = (agora_br + timedelta(days=7)).strftime('%Y-%m-%d')
-          hoje_md    = agora_br.strftime('%m-%d')
-          amanha_md  = (agora_br + timedelta(days=1)).strftime('%m-%d')
+          agora_br  = datetime.now(timezone.utc) + timedelta(hours=-3)
+          hoje      = agora_br.strftime('%Y-%m-%d')
+          amanha    = (agora_br + timedelta(days=1)).strftime('%Y-%m-%d')
+          em7dias   = (agora_br + timedelta(days=7)).strftime('%Y-%m-%d')
+          hoje_md   = agora_br.strftime('%m-%d')
+          amanha_md = (agora_br + timedelta(days=1)).strftime('%m-%d')
 
-          print(f'Hoje: {hoje} | Amanha: {amanha} | Em 7 dias: {em7dias}')
+          print(f'Hoje: {hoje} | Amanhã: {amanha} | Em 7 dias: {em7dias}')
 
           # ── Busca dispositivos ───────────────────────────────────────────────
           raw_d = requests.get(f'{DB}/dispositivos.json').json()
@@ -61,18 +61,30 @@ jobs:
                 else:
                   print('  Falha:', msg[:60])
 
-          # ── EVENTOS ─────────────────────────────────────────────────────────
+          # ── EVENTOS ──────────────────────────────────────────────────────────
           raw_e = requests.get(f'{DB}/app/events.json').json()
           if raw_e:
             todos_ev = list(raw_e.values()) if isinstance(raw_e,dict) else [e for e in raw_e if e]
             for ev in todos_ev:
               if not ev: continue
               data_ev = ev.get('data','')
-              corpo   = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
+              corpo   = ev.get('titulo','') + (f" às {ev['horario']}" if ev.get('horario') else '') + (f" — {ev['local']}" if ev.get('local') else '')
               if data_ev == amanha:
-                enviar_push('📅 Evento amanha!', corpo, f"ev-{ev.get('id',0)}-1d")
+                enviar_push('📅 Evento amanhã!', corpo, f"ev-{ev.get('id',0)}-1d")
               elif data_ev == em7dias:
                 enviar_push('📅 Evento em 1 semana!', corpo, f"ev-{ev.get('id',0)}-7d")
+
+          # ── VISITAS LOCAIS ───────────────────────────────────────────────────
+          raw_v = requests.get(f'{DB}/app/visitas.json').json()
+          if raw_v:
+            visitas = list(raw_v.values()) if isinstance(raw_v,dict) else [v for v in raw_v if v]
+            for v in visitas:
+              if not v or v.get('data') != amanha: continue
+              nome_v  = v.get('nome','')
+              horario = f" às {v['horario']}" if v.get('horario') else ''
+              end     = f" — {v['endereco']}" if v.get('endereco') else ''
+              corpo   = f"Visita na casa de {nome_v}{horario}{end}"
+              enviar_push('🏠 Visita amanhã!', corpo, f"visita-{v.get('id',nome_v)}-1d")
 
           # ── ANIVERSÁRIOS ─────────────────────────────────────────────────────
           raw_m = requests.get(f'{DB}/app/members.json').json()
@@ -81,15 +93,14 @@ jobs:
             for m in membros:
               if not m or not m.get('nome') or not m.get('nascimento'): continue
               nasc = m['nascimento']
-              # Suporta YYYY-MM-DD e DD/MM/YYYY
               try:
                 if '-' in nasc:
                   parts = nasc.split('-')
-                  nasc_md = f"{parts[1]}-{parts[2]}"
+                  nasc_md  = f"{parts[1]}-{parts[2]}"
                   ano_nasc = int(parts[0])
                 else:
                   parts = nasc.split('/')
-                  nasc_md = f"{parts[1]}-{parts[0]}"
+                  nasc_md  = f"{parts[1]}-{parts[0]}"
                   ano_nasc = int(parts[2])
               except:
                 continue
@@ -97,14 +108,14 @@ jobs:
               idade = agora_br.year - ano_nasc
               if nasc_md == amanha_md:
                 enviar_push(
-                  f'🎂 Aniversário amanhã!',
-                  f'Amanha {nome} completa {idade} anos! Nao se esqueca de dar os parabens 🎉',
+                  '🎂 Aniversário amanhã!',
+                  f'Amanhã {nome} completa {idade} anos! Não se esqueça de dar os parabéns! 🎉',
                   f'aniv-{m.get("id",nome)}-amanha'
                 )
               elif nasc_md == hoje_md:
                 enviar_push(
-                  f'🎉 Feliz Aniversário!',
-                  f'Hoje {nome} completa {idade} anos! Nao se esqueca de dar os parabens 🥳',
+                  '🎉 Feliz Aniversário!',
+                  f'Hoje {nome} completa {idade} anos! Não se esqueça de dar os parabéns! 🥳',
                   f'aniv-{m.get("id",nome)}-hoje'
                 )
 
@@ -116,4 +127,4 @@ jobs:
                 requests.delete(f'{DB}/dispositivos/{k}.json')
                 print('Subscription expirada removida:', k[:20])
 
-          print('Concluido!')
+          print('Concluído!')

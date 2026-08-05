@@ -52,7 +52,7 @@ jobs:
           for ev, dias in evs:
             titulo = 'Evento amanha!' if dias==1 else 'Evento em 1 semana!'
             corpo  = ev.get('titulo','') + (f" as {ev['horario']}" if ev.get('horario') else '') + (f" - {ev['local']}" if ev.get('local') else '')
-            payload = json.dumps({'title': titulo, 'body': corpo})
+            payload = json.dumps({'title': titulo, 'body': corpo, 'tag': f"ev-{ev.get('id',0)}-{dias}d"})
             print(f'Enviando ({dias}d): {corpo}')
             for d in disps:
               try:

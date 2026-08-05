@@ -6,6 +6,8 @@ self.addEventListener('push', function(e) {
   e.waitUntil(
     self.registration.showNotification(data.title || 'Reuniao de Jovens', {
       body: data.body || '',
+      icon: 'https://mocidadeparquemacedo.github.io/Mocidade-pq-macedo/icon-192x192.png',
+      badge: 'https://mocidadeparquemacedo.github.io/Mocidade-pq-macedo/icon-192x192.png',
       requireInteraction: true,
       tag: data.tag || 'evento',
       vibrate: [200, 100, 200]

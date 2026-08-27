@@ -7,7 +7,9 @@ self.addEventListener('push', function(e) {
   try { data = e.data.json(); } catch(_) {
     data = { title: e.data ? e.data.text() : 'Notificacao' };
   }
-  var iconUrl = 'https://mocidadeparquemacedo.github.io/Mocidade-pq-macedo/icon-192x192.png';
+  // Corrigido: o nome/extensão do ícone real no repositório é icon-192.jpg
+  // (não icon-192x192.png, que não existe).
+  var iconUrl = 'https://mocidadeparquemacedo.github.io/Mocidade-pq-macedo/icon-192.jpg';
   e.waitUntil(
     self.registration.showNotification(data.title || 'Reuniao de Jovens', {
       body: data.body || '',

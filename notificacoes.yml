@@ -1,0 +1,20 @@
+nome: Notificações de Eventos
+
+sobre:
+  despacho de fluxo de trabalho:
+  agendar:
+    - cron: '0 11 * * *'
+
+empregos:
+  notificar:
+    executa em: ubuntu-latest
+    passos:
+      - nome: oz
+        execute: pip install pywebpush requests --quiet
+
+      - nome: Executor
+        ambiente:
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+        executar: |
+          eco"=" | base64 -d > /tmp/notif.py
+          python3 /tmp/notif.py

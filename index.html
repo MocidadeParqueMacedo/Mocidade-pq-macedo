@@ -13078,12 +13078,22 @@ function _glVigiaLigado() { try { return localStorage.getItem('rj_glorinha_ouvir
 function _glVigiaSuportado() {
   return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && (window.AudioContext || window.webkitAudioContext) && window.WebAssembly && window.Worker);
 }
+// Conversa por voz em andamento: chat aberto e a pessoa falando com ela pelo 🎤
+function _glConversaPorVoz() {
+  var modal = document.getElementById('modal-glorinha');
+  return !!(modal && modal.classList.contains('open') && _glorinhaModoVoz);
+}
+// O ouvido local fica ligado: com a opção "Ouvir Glorinha" ligada (o tempo todo),
+// OU durante uma conversa por voz (pra dar pra interromper dizendo "Glorinha").
+// Só solta o microfone enquanto o 🎤 do comando está em uso.
 function _glOuvidoDeveOuvir() {
   var root = document.getElementById('app-root');
-  return _glVigiaLigado() && _glVigiaSuportado() && !_glOuvido.falhou && document.visibilityState === 'visible' &&
+  return (_glVigiaLigado() || _glConversaPorVoz()) && _glVigiaSuportado() && !_glOuvido.falhou && document.visibilityState === 'visible' &&
     root && root.classList.contains('visible') &&
     !_glorinhaReconhecimento && !(_glorinhaGravador && _glorinhaGravador.state === 'recording');
 }
+// Reabre o ouvido logo que o 🎤 do comando termina (sem esperar o relógio de 1 s)
+function _glOuvidoReabrirJa() { setTimeout(function(){ if (_glOuvidoDeveOuvir() && !_glOuvido.stream) _glOuvidoAbrir(); }, 30); }
 function _glOuvidoAviso(txt) { var a = document.getElementById('glorinha-ouvir-aviso'); if (a) a.textContent = txt || ''; }
 
 function _glOuvidoCarregar(taxa) {
@@ -13166,7 +13176,10 @@ function _glChamou() {
 setInterval(function() {
   if (_glOuvidoDeveOuvir()) { if (!_glOuvido.stream) _glOuvidoAbrir(); }
   else if (_glOuvido.stream) _glOuvidoFechar();
-}, 1000);
+  // Aviso no chat: microfone ligado esperando "Glorinha"
+  var st = document.getElementById('glorinha-ouvido-status');
+  if (st) st.style.display = (_glOuvido.stream && !_glorinhaReconhecimento) ? 'block' : 'none';
+}, 500);
 document.addEventListener('visibilitychange', function(){ if (document.visibilityState !== 'visible') _glOuvidoFechar(); });
 // Alguns navegadores só liberam o áudio depois de um toque na tela
 document.addEventListener('touchstart', function(){ if (_glOuvido.ctx && _glOuvido.ctx.state === 'suspended') _glOuvido.ctx.resume(); }, { passive: true });
@@ -13358,6 +13371,7 @@ function _glorinhaOuvirNoAparelho() {
     clearTimeout(cronometro);
     _glorinhaReconhecimento = null;
     _glorinhaSetOuvindo(false);
+    _glOuvidoReabrirJa(); // o ouvido do "Glorinha" volta na hora, pra pegar uma interrupção desde o início da resposta
     var falado = textoAtual();
     if (erro === 'not-allowed') { showToast('🎤 Permita o uso do microfone para falar com a Glorinha'); return; }
     if (!falado && erro && erro !== 'no-speech' && erro !== 'aborted') { _glorinhaGravarAudio(); return; } // reconhecimento indisponível: grava
@@ -13387,6 +13401,7 @@ async function _glorinhaGravarAudio() {
     clearTimeout(gr._limite);
     stream.getTracks().forEach(function(t){ t.stop(); });
     _glorinhaSetOuvindo(false);
+    _glOuvidoReabrirJa();
     try {
       var wav = await _audioParaWav(new Blob(partes, { type: gr.mimeType || 'audio/webm' }));
       if (!wav) { showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo'); return; }
@@ -13503,8 +13518,9 @@ function _glorinhaPararVoz() {
 let _glInterrupcao = null;
 function _glInterrupcaoIniciar() {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  // Com o ouvido local ligado (opção "Ouvir Glorinha"), é ele quem ouve a interrupção — sem bip
-  if (_glInterrupcao || !SR || _glorinhaReconhecimento || _glVigiaLigado()) return;
+  // Quem ouve a interrupção é o ouvido local (sem bip, fica ligado na conversa por voz).
+  // Este ouvido do navegador é só a reserva pra aparelhos onde o local não funciona.
+  if (_glInterrupcao || !SR || _glorinhaReconhecimento || (_glVigiaSuportado() && !_glOuvido.falhou)) return;
   var rec = new SR();
   rec.lang = 'pt-BR';
   rec.continuous = true;
@@ -13545,6 +13561,7 @@ function _glInterrupcaoIniciar() {
     if (ouvindo) {
       if (_glorinhaReconhecimento === rec) _glorinhaReconhecimento = null;
       _glorinhaSetOuvindo(false);
+      _glOuvidoReabrirJa();
       if (!document.getElementById('modal-glorinha').classList.contains('open')) return; // fechou o chat
       var p = pedido();
       if (p) { _glorinhaFalarResposta = true; glorinhaEnviar(p); }
@@ -13705,6 +13722,7 @@ window.addEventListener('orientationchange', posicionarBotaoInicio);
       <button class="btn btn-sm btn-secondary" onclick="glorinhaEnviar('Como foi a última reunião?')">Última reunião</button>
     </div>
     <div id="glorinha-status-voz" style="display:none;font-size:.76rem;color:var(--danger);font-weight:700;margin-bottom:6px;text-align:center;"></div>
+    <div id="glorinha-ouvido-status" style="display:none;font-size:.74rem;color:var(--success);font-weight:700;margin-bottom:6px;text-align:center;">👂 Ouvindo — diga <b>"Glorinha"</b> para falar (até interrompendo)</div>
     <div style="display:flex;gap:8px;">
       <button id="glorinha-mic" onclick="glorinhaMicrofone()" title="Falar com a Glorinha" style="flex-shrink:0;width:44px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);font-size:1.2rem;cursor:pointer;">🎤</button>
       <input type="text" id="glorinha-input" placeholder="Pergunte ou toque no 🎤 e fale..." onkeydown="if(event.key==='Enter')glorinhaEnviar()" style="flex:1;"/>

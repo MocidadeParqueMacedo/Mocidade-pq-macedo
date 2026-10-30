@@ -1,9 +1,9 @@
 // ══════════════════════════════════════════════
-//  Macedão – Service Worker v3
+//  Macedão – Service Worker v4
 // ══════════════════════════════════════════════
 
-const CACHE_NAME = 'macedao-v3';
-const CACHE_VERSION = 3;
+const CACHE_NAME = 'macedao-v4';
+const CACHE_VERSION = 4;
 
 const STATIC_ASSETS = [
   './',
@@ -19,7 +19,7 @@ const STATIC_ASSETS = [
 ];
 
 const BYPASS_DOMAINS = [
-  'firebaseio.com','firebasestorage.app','firebaseapp.com','gstatic.com','googleapis.com',
+  'supabase.co','firebaseio.com','firebasestorage.app','firebaseapp.com','gstatic.com','googleapis.com',
 ];
 
 self.addEventListener('install', (event) => {

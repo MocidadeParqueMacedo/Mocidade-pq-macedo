@@ -6,7 +6,19 @@ self.addEventListener('activate', function(e) { e.waitUntil(clients.claim()); })
 // usa a última cópia guardada. Necessário para o navegador oferecer "Instalar app".
 // Chamadas ao banco (Supabase) e outros arquivos não passam por aqui.
 var CACHE_PAGINAS = 'macedao-paginas-v1';
+// Modelo de voz da Glorinha (~31 MB) e a biblioteca que o usa: baixa UMA vez e
+// guarda; depois sempre vem do aparelho (o arquivo tem versão no nome).
+var CACHE_VOZ = 'macedao-voz-v1';
 self.addEventListener('fetch', function(e) {
+  var url = e.request.url;
+  if (e.request.method === 'GET' && (url.indexOf('/modelos/') !== -1 || url.indexOf('vosk-browser@') !== -1)) {
+    e.respondWith(caches.open(CACHE_VOZ).then(function(c) {
+      return c.match(e.request).then(function(salvo) {
+        return salvo || fetch(e.request).then(function(resp) { if (resp && resp.ok) c.put(e.request, resp.clone()); return resp; });
+      });
+    }));
+    return;
+  }
   if (e.request.mode !== 'navigate') return;
   e.respondWith(
     fetch(e.request).then(function(resp) {

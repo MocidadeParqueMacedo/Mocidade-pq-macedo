@@ -89,6 +89,8 @@ const ferramentas: Record<string, (d: any, a: any) => any> = {
     return { reunioes_realizadas: total, ordem: a.ordem === "menos" ? "menos presentes primeiro" : "mais presentes primeiro", lista: arr.slice(0, lim).map((x: any) => `${rotulo(x.m)}: ${x.p} de ${total}`) };
   },
   aniversarios(d, a) {
+    // Visitante (sem login) só vê os próximos 7 dias, sem idade — igual ao aviso da tela inicial
+    if (d.perfil === "anonimo") a = { proximos_dias: Math.min(7, a.proximos_dias || 7) };
     const hoje = new Date(d.hoje + "T12:00:00Z");
     let alvo = d.membros.filter((m: any) => m.dia && m.mes);
     if (a.mes) alvo = alvo.filter((m: any) => +m.mes === +a.mes);
@@ -99,15 +101,16 @@ const ferramentas: Record<string, (d: any, a: any) => any> = {
       return { m, dt, dias, idade: m.ano ? dt.getUTCFullYear() - m.ano : null };
     }).filter((x: any) => a.mes ? true : x.dias >= 0 && x.dias <= (a.proximos_dias || 30))
       .sort((x: any, y: any) => x.dt - y.dt);
-    return { filtro: a.mes ? `mês de ${MESES[+a.mes - 1]}` : `próximos ${a.proximos_dias || 30} dias`, aniversariantes: prox.map((x: any) => `${rotulo(x.m)} — ${x.m.dia}/${x.m.mes}${x.idade ? `, completa ${x.idade} anos` : ""}${x.dias === 0 ? " (HOJE)" : ""}`) };
+    return { filtro: a.mes ? `mês de ${MESES[+a.mes - 1]}` : `próximos ${a.proximos_dias || 30} dias`, aniversariantes: prox.map((x: any) => `${rotulo(x.m)} — ${x.m.dia}/${x.m.mes}${x.idade && d.perfil !== "anonimo" ? `, completa ${x.idade} anos` : ""}${x.dias === 0 ? " (HOJE)" : ""}`) };
   },
   agenda(d, a) {
     const dias = Math.max(1, Math.min(365, a.proximos_dias || 30));
     const fim = new Date(new Date(d.hoje + "T12:00:00Z").getTime() + dias * 86400000).toISOString().slice(0, 10);
     const dentro = (x: string) => x && x >= d.hoje && x <= fim;
-    const ev = d.eventos.filter((e: any) => dentro(e.data)).sort((x: any, y: any) => x.data.localeCompare(y.data))
+    // Evento privado: só Admin e Usuário (igual ao app); visitas: só quem tem login
+    const ev = d.eventos.filter((e: any) => dentro(e.data) && (!e.privado || d.perfil === "admin" || d.perfil === "usuario")).sort((x: any, y: any) => x.data.localeCompare(y.data))
       .map((e: any) => `${fmt(e.data)}${e.horario ? " às " + e.horario : ""} — ${e.titulo || "Evento"}${e.local ? " (" + e.local + ")" : ""}`);
-    const vi = d.visitas.filter((v: any) => dentro(v.data)).sort((x: any, y: any) => x.data.localeCompare(y.data))
+    const vi = d.perfil === "anonimo" ? [] : d.visitas.filter((v: any) => dentro(v.data)).sort((x: any, y: any) => x.data.localeCompare(y.data))
       .map((v: any) => `${fmt(v.data)} — visita na casa de ${v.nome || "?"}`);
     return { periodo: `de ${fmt(d.hoje)} a ${fmt(fim)}`, eventos: ev, visitas: vi };
   },
@@ -156,7 +159,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.headers.get("origin") !== ORIGEM_PERMITIDA) return resposta({ erro: "origem não permitida" }, 403);
 
-  const { mensagens, usuario, audio } = await req.json().catch(() => ({}));
+  const { mensagens, usuario, audio, soTranscrever, perfil: perfilPedido } = await req.json().catch(() => ({}));
+  // Perfil de quem está usando (o mesmo que o app usa pra liberar as telas)
+  const perfil: string = ["anonimo", "usuario", "editor", "admin"].includes(String(perfilPedido)) ? String(perfilPedido) : "anonimo";
   if (!Array.isArray(mensagens)) return resposta({ erro: "sem mensagem" }, 400);
 
   // Pergunta por áudio (quando o aparelho não transcreve sozinho): o Gemini
@@ -175,11 +180,15 @@ Deno.serve(async (req) => {
     }
     if (!transcricao) return resposta({ resposta: "Não consegui ouvir direitinho agora 😅 Tenta falar de novo daqui a pouquinho, ou escreve pra mim.", ocupada: true });
     if (/^\(?sil[eê]ncio\)?$/i.test(transcricao)) return resposta({ transcricao: "", resposta: "Não ouvi nada 🙉 Toca no microfone e fala mais pertinho, tá bom?" });
+    if (soTranscrever) return resposta({ transcricao });
     mensagens.push({ role: "user", text: transcricao });
   }
   if (!mensagens.length) return resposta({ erro: "sem mensagem" }, 400);
 
-  const dados = await carregar();
+  const dados: any = await carregar();
+  dados.perfil = perfil;
+  const permitidas = perfil === "anonimo" ? ["agenda", "aniversarios"] : declaracoes.map((x) => x.name);
+  const declaracoesPerfil = declaracoes.filter((x) => permitidas.includes(x.name));
   const hoje = new Date(dados.hoje + "T12:00:00Z");
   const sistema = { parts: [{ text:
     `Você é a Glorinha, a assistente virtual do app da Reunião de Jovens da Mocidade Parque Macedo (Congregação Cristã no Brasil). ` +
@@ -188,14 +197,15 @@ Deno.serve(async (req) => {
     `Hoje é ${DIAS_SEMANA[hoje.getUTCDay()]}, ${fmt(dados.hoje)}.` + (usuario ? ` Você está falando com ${usuario}.` : "") + ` ` +
     `Use SEMPRE as ferramentas para qualquer dado (membros, presenças, reuniões, aniversários, eventos, visitas, recitativos) e repasse os números e nomes exatamente como vierem — nunca invente nem recalcule. ` +
     `Se houver vários membros com o mesmo nome, pergunte qual. ` +
-    `Por enquanto você só CONSULTA: se pedirem para criar, alterar, lançar ou apagar algo, explique com gentileza que por enquanto ainda não consegue fazer alterações e que isso deve ser feito pelas telas do app. ` +
+    `A pessoa está usando o app como: ${({ anonimo: "visitante sem login (só vê agenda pública, recitativos e próximos aniversários; para o resto precisa entrar na conta)", usuario: "Usuário", editor: "Editor", admin: "Administrador" } as any)[perfil]}. Nunca revele dados que esse perfil não pode ver. ` +
+    `Você aqui só CONSULTA dados. Criar, editar, lançar e apagar são feitos pelos comandos da Glorinha no próprio app: se a pessoa pedir algo assim e você foi chamada, sugira a frase exata que ela pode mandar, por exemplo: "cria evento dia 15/11 às 19h: Ensaio geral na CCB", "marca visita na casa da Eliane sábado às 20h", "lançar presença de domingo", "nova ata", "cadastra membro João da 2ª cont", "lançar recitativo das irmãs 4ª cont", "aprovar Maria como editor". ` +
     `Assuntos fora do app: responda brevemente e com respeito, sem opinar sobre doutrina.` }] };
 
   const contents: any[] = mensagens.slice(-12).map((m: any) => ({ role: m.role === "model" ? "model" : "user", parts: [{ text: String(m.text || "").slice(0, 2000) }] }));
   let iModelo = 0;
   let cotaDiariaEsgotada = true; // vira false se algum modelo falhar por outro motivo
   for (let passo = 0; passo < 8; passo++) {
-    const j = await gemini(MODELOS[iModelo], { systemInstruction: sistema, contents, tools: [{ functionDeclarations: declaracoes }] });
+    const j = await gemini(MODELOS[iModelo], { systemInstruction: sistema, contents, tools: [{ functionDeclarations: declaracoesPerfil }] });
     if (j.error) {
       if (!/PerDay|per day/i.test(JSON.stringify(j.error))) cotaDiariaEsgotada = false;
       // Lotado, sem cota ou indisponível: tenta o próximo modelo, no mesmo passo
@@ -215,7 +225,7 @@ Deno.serve(async (req) => {
       return resposta({ resposta: texto || "Hmm, não consegui pensar numa resposta agora. Pode perguntar de outro jeito?", modelo: MODELOS[iModelo], transcricao });
     }
     contents.push({ role: "user", parts: chamadas.map((c: any) => {
-      const f = ferramentas[c.functionCall.name];
+      const f = permitidas.includes(c.functionCall.name) ? ferramentas[c.functionCall.name] : null;
       let resultado: unknown;
       try { resultado = f ? f(dados, c.functionCall.args || {}) : { erro: "ferramenta desconhecida" }; }
       catch (e) { resultado = { erro: String(e).slice(0, 120) }; }

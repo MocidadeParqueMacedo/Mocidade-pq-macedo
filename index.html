@@ -13021,7 +13021,6 @@ const GLORINHA_AVATAR = '<svg viewBox="0 0 64 64" width="100%" height="100%" ari
   '</svg>';
 
 function abrirGlorinha() {
-  _glVigiaParar(); // com o chat aberto, quem ouve é o 🎤 do chat
   document.getElementById('modal-glorinha').classList.add('open');
   _glVigiaAtualizarChave();
   // Se a pessoa entrou/saiu da conta desde a última conversa, recomeça (o que ela pode fazer mudou)
@@ -13061,72 +13060,130 @@ function _glorinhaResponder(r) {
   else if (ouvirDepois) setTimeout(ouvirDepois, 400);
   if (typeof r.depois === 'function') setTimeout(r.depois, 900); // dá tempo de ler a confirmação
 }
-// ── "Glorinha!" — ativar pela voz com o app aberto (opcional, liga/desliga) ──
-// Fica escutando em segundo plano (reconhecimento de fala do próprio aparelho)
-// só enquanto o app está aberto na tela e o chat fechado. Ao ouvir "Glorinha",
-// abre o chat; se a pessoa já falou o pedido junto ("Glorinha, comando marcar
-// evento"), ele é enviado direto. Não reage a "Glória" (comum em louvor).
-let _glVigia = null;
+// ── "Glorinha!" — ouvido LOCAL, sem bip (opcional, liga/desliga) ──
+// Com a opção ligada e o app aberto, o microfone fica aberto o tempo todo e um
+// reconhecedor de voz que roda NO PRÓPRIO APARELHO (Vosk, modelo em português de
+// ~31 MB baixado uma vez só) escuta "Glorinha" — sem desligar/religar e sem bip
+// (o reconhecimento do Google desliga sozinho a cada silêncio e o Android apita).
+// Ouvir "Glorinha" = apertar o 🎤: se ela estiver falando, se cala; o chat abre e
+// o microfone do comando liga. Enquanto o 🎤 do comando está em uso, o ouvido
+// local solta o microfone e volta sozinho depois. Não reage a "Glória".
+// O modelo não conhece a palavra "Glorinha": ele a ouve como "loirinha" (testado).
+const GL_VOSK_JS = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
+const GL_MODELO_URL = new URL('modelos/vosk-pt-pequeno.tar.gz', location.href).href;
+const GL_CHAMADO = /\b(g?loirinha|glorinha|gloria nha|glorinho)\b|^(a |o )?linha$/;
+let _glOuvido = { rec: null, taxa: 0, stream: null, ctx: null, carregando: null, falhou: false, ultimo: 0 };
+
 function _glVigiaLigado() { try { return localStorage.getItem('rj_glorinha_ouvir') === '1'; } catch(e) { return false; } }
-function _glVigiaSuportado() { return !!(window.SpeechRecognition || window.webkitSpeechRecognition); }
-function _glVigiaPode() {
-  var root = document.getElementById('app-root'), modal = document.getElementById('modal-glorinha');
-  return _glVigiaLigado() && _glVigiaSuportado() && document.visibilityState === 'visible' &&
-    root && root.classList.contains('visible') && modal && !modal.classList.contains('open') &&
+function _glVigiaSuportado() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && (window.AudioContext || window.webkitAudioContext) && window.WebAssembly && window.Worker);
+}
+function _glOuvidoDeveOuvir() {
+  var root = document.getElementById('app-root');
+  return _glVigiaLigado() && _glVigiaSuportado() && !_glOuvido.falhou && document.visibilityState === 'visible' &&
+    root && root.classList.contains('visible') &&
     !_glorinhaReconhecimento && !(_glorinhaGravador && _glorinhaGravador.state === 'recording');
 }
-function _glVigiaIniciar() {
-  if (_glVigia || !_glVigiaPode()) return;
-  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var rec = new SR();
-  rec.lang = 'pt-BR';
-  rec.continuous = true;
-  rec.interimResults = false;
-  rec.onresult = function(e) {
-    for (var i = e.resultIndex; i < e.results.length; i++) {
-      var txt = e.results[i][0].transcript || '';
-      var n = _glNorm(txt), m = n.match(/\bglorin(h)?a\b/);
-      if (!m) continue;
-      var resto = n.slice(m.index + m[0].length).replace(/^[\s,!.]+/, '');
-      _glVigiaParar();
-      abrirGlorinha();
-      _glorinhaModoVoz = true;
-      if (resto) { _glorinhaFalarResposta = true; glorinhaEnviar(resto); }
-      else _glorinhaResponder({ texto: 'Oi! Tô aqui 😊 Pode falar.', continuarOuvindo: true });
-      return;
-    }
-  };
-  rec.onerror = function(e) {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+function _glOuvidoAviso(txt) { var a = document.getElementById('glorinha-ouvir-aviso'); if (a) a.textContent = txt || ''; }
+
+function _glOuvidoCarregar(taxa) {
+  if (_glOuvido.rec && _glOuvido.taxa === taxa) return Promise.resolve();
+  if (_glOuvido.carregando) return _glOuvido.carregando;
+  _glOuvidoAviso('⏳ Baixando a voz da Glorinha (31 MB, só na primeira vez)…');
+  _glOuvido.carregando = new Promise(function(ok, erro) {
+    if (window.Vosk) return ok();
+    var s = document.createElement('script');
+    s.src = GL_VOSK_JS; s.onload = ok; s.onerror = function(){ erro(new Error('não carregou a biblioteca de voz')); };
+    document.head.appendChild(s);
+  }).then(function() {
+    return _glOuvido.modelo || Vosk.createModel(GL_MODELO_URL);
+  }).then(function(modelo) {
+    _glOuvido.modelo = modelo;
+    var rec = new modelo.KaldiRecognizer(taxa);
+    rec.on('partialresult', function(m){ _glOuvidoOuviu(m.result.partial); });
+    rec.on('result', function(m){ _glOuvidoOuviu(m.result.text); });
+    _glOuvido.rec = rec; _glOuvido.taxa = taxa;
+    _glOuvidoAviso('');
+  }).finally(function(){ _glOuvido.carregando = null; });
+  return _glOuvido.carregando;
+}
+
+async function _glOuvidoAbrir() {
+  if (_glOuvido.stream || _glOuvido.carregando) return;
+  try {
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+    if (!_glOuvidoDeveOuvir()) { stream.getTracks().forEach(function(t){ t.stop(); }); return; }
+    var Ctx = window.AudioContext || window.webkitAudioContext, ctx;
+    try { ctx = new Ctx({ sampleRate: 16000 }); } catch(e) { ctx = new Ctx(); }
+    await _glOuvidoCarregar(ctx.sampleRate);
+    if (!_glOuvidoDeveOuvir()) { stream.getTracks().forEach(function(t){ t.stop(); }); ctx.close(); return; }
+    var fonte = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1);
+    proc.onaudioprocess = function(e) { if (_glOuvido.ctx === ctx && _glOuvido.rec) { try { _glOuvido.rec.acceptWaveform(e.inputBuffer); } catch(x) {} } };
+    fonte.connect(proc); proc.connect(ctx.destination);
+    if (ctx.state === 'suspended') ctx.resume();
+    _glOuvido.stream = stream; _glOuvido.ctx = ctx; _glOuvido.abertoEm = Date.now();
+  } catch(e) {
+    console.warn('Ouvido local da Glorinha:', e);
+    if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) {
       try { localStorage.removeItem('rj_glorinha_ouvir'); } catch(x) {}
       _glVigiaAtualizarChave();
       showToast('🎤 Permita o microfone para a Glorinha ouvir quando você chamar');
+    } else {
+      _glOuvido.falhou = true;
+      _glOuvidoAviso('Não consegui ligar a escuta neste aparelho 😕');
     }
-  };
-  rec.onend = function() { if (_glVigia === rec) _glVigia = null; }; // o relógio abaixo religa
-  try { rec.start(); _glVigia = rec; } catch(e) { _glVigia = null; }
+  }
 }
-function _glVigiaParar() {
-  if (!_glVigia) return;
-  var r = _glVigia; _glVigia = null; r.onend = null;
-  try { r.abort(); } catch(e) {}
+function _glOuvidoFechar() {
+  var tinha = !!_glOuvido.stream;
+  if (_glOuvido.stream) _glOuvido.stream.getTracks().forEach(function(t){ t.stop(); });
+  if (_glOuvido.ctx) { try { _glOuvido.ctx.close(); } catch(e) {} }
+  _glOuvido.stream = null; _glOuvido.ctx = null;
+  // Zera a frase que estava pela metade — senão, ao religar, o resto dela
+  // ("loirinha quem faz…") chamaria a Glorinha de novo à toa
+  if (tinha && _glOuvido.rec) { try { _glOuvido.rec.retrieveFinalResult(); } catch(e) {} }
 }
-// O reconhecimento do navegador para sozinho depois de um tempo em silêncio: religa
-setInterval(function(){ if (_glVigiaPode()) _glVigiaIniciar(); else if (_glVigia && !_glVigiaLigado()) _glVigiaParar(); }, 2500);
-document.addEventListener('visibilitychange', function(){ if (document.visibilityState !== 'visible') _glVigiaParar(); });
+function _glOuvidoOuviu(texto) {
+  if (!texto || !_glOuvido.stream || Date.now() - _glOuvido.abertoEm < 800) return;
+  var n = _glNorm(texto);
+  if (!GL_CHAMADO.test(n) || Date.now() - _glOuvido.ultimo < 3000) return;
+  _glOuvido.ultimo = Date.now();
+  _glChamou();
+}
+// Chamaram "Glorinha" = apertar o botão do 🎤
+function _glChamou() {
+  if (_glorinhaFalaAtual || ('speechSynthesis' in window && speechSynthesis.speaking)) {
+    if (_glorinhaFalaAtual) _glorinhaFalaAtual._interrompida = true;
+    speechSynthesis.cancel();
+    var parar = document.getElementById('glorinha-parar-voz'); if (parar) parar.style.display = 'none';
+  }
+  _glOuvidoFechar(); // solta o microfone para o reconhecimento do comando
+  if (!document.getElementById('modal-glorinha').classList.contains('open')) abrirGlorinha();
+  _glorinhaModoVoz = true;
+  setTimeout(function(){ if (!_glorinhaReconhecimento) glorinhaMicrofone(); }, 200);
+}
+// Mantém o ouvido aberto quando deve; solta o microfone enquanto o 🎤 do comando está em uso
+setInterval(function() {
+  if (_glOuvidoDeveOuvir()) { if (!_glOuvido.stream) _glOuvidoAbrir(); }
+  else if (_glOuvido.stream) _glOuvidoFechar();
+}, 1000);
+document.addEventListener('visibilitychange', function(){ if (document.visibilityState !== 'visible') _glOuvidoFechar(); });
+// Alguns navegadores só liberam o áudio depois de um toque na tela
+document.addEventListener('touchstart', function(){ if (_glOuvido.ctx && _glOuvido.ctx.state === 'suspended') _glOuvido.ctx.resume(); }, { passive: true });
+document.addEventListener('click', function(){ if (_glOuvido.ctx && _glOuvido.ctx.state === 'suspended') _glOuvido.ctx.resume(); });
 
 function _glVigiaAtualizarChave() {
-  var chk = document.getElementById('glorinha-ouvir'), aviso = document.getElementById('glorinha-ouvir-aviso');
+  var chk = document.getElementById('glorinha-ouvir');
   if (!chk) return;
   chk.checked = _glVigiaLigado();
-  if (!_glVigiaSuportado()) { chk.disabled = true; aviso.textContent = 'Este aparelho/navegador não permite.'; }
-  else aviso.textContent = (typeof _ehIOS === 'function' && _ehIOS()) ? 'No iPhone pode não funcionar direito.' : '';
+  if (!_glVigiaSuportado()) { chk.disabled = true; _glOuvidoAviso('Este aparelho/navegador não permite.'); }
 }
 function glorinhaAlternarOuvir(chk) {
   if (chk.checked && !_glVigiaSuportado()) { chk.checked = false; showToast('Este aparelho não permite ouvir "Glorinha" 😕'); return; }
   try { if (chk.checked) localStorage.setItem('rj_glorinha_ouvir', '1'); else localStorage.removeItem('rj_glorinha_ouvir'); } catch(e) {}
-  if (!chk.checked) _glVigiaParar();
-  showToast(chk.checked ? '👂 Pronto! Com o app aberto, é só dizer "Glorinha"' : 'Glorinha não vai mais ficar ouvindo');
+  _glOuvido.falhou = false;
+  if (!chk.checked) { _glOuvidoFechar(); _glOuvidoAviso(''); }
+  showToast(chk.checked ? '👂 Ligado! O microfone fica aberto com o app aberto — é só dizer "Glorinha"' : 'Glorinha não vai mais ficar ouvindo');
 }
 
 function fecharGlorinha() {
@@ -13261,6 +13318,7 @@ function glorinhaMicrofone() {
   if (_glorinhaGravador && _glorinhaGravador.state === 'recording') { _glorinhaGravador.stop(); return; }
   if (_glorinhaPensando) return;
   _glorinhaPararVoz();
+  _glOuvidoFechar(); // o ouvido local solta o microfone pro reconhecimento do comando (volta sozinho depois)
   if (window.SpeechRecognition || window.webkitSpeechRecognition) _glorinhaOuvirNoAparelho();
   else _glorinhaGravarAudio();
 }
@@ -13445,7 +13503,8 @@ function _glorinhaPararVoz() {
 let _glInterrupcao = null;
 function _glInterrupcaoIniciar() {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (_glInterrupcao || !SR || _glorinhaReconhecimento) return;
+  // Com o ouvido local ligado (opção "Ouvir Glorinha"), é ele quem ouve a interrupção — sem bip
+  if (_glInterrupcao || !SR || _glorinhaReconhecimento || _glVigiaLigado()) return;
   var rec = new SR();
   rec.lang = 'pt-BR';
   rec.continuous = true;
@@ -13635,7 +13694,7 @@ window.addEventListener('orientationchange', posicionarBotaoInicio);
     </div>
     <label style="display:flex;align-items:center;gap:8px;font-size:.76rem;color:var(--text-muted);margin:-4px 0 8px;cursor:pointer;">
       <input type="checkbox" id="glorinha-ouvir" onchange="glorinhaAlternarOuvir(this)" style="width:auto;"/>
-      <span>👂 Ouvir quando eu chamar <b>"Glorinha"</b> (com o app aberto)</span>
+      <span>👂 Ouvir quando eu chamar <b>"Glorinha"</b> (microfone fica ligado com o app aberto, sem bip)</span>
       <span id="glorinha-ouvir-aviso" style="color:var(--danger);"></span>
     </label>
     <div id="glorinha-msgs" style="flex:1;min-height:200px;max-height:55vh;overflow-y:auto;padding:4px 2px;"></div>

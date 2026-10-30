@@ -12301,6 +12301,484 @@ document.addEventListener('click', function(e) {
   if (modal && e.target === modal) fecharModalDownload();
 });
 
+// ════════ GLORINHA — CÉREBRO LOCAL (bot próprio do app) ════════
+// Entende os comandos mais comuns direto no aparelho: sem internet, sem limite
+// e sem enviar nada pra fora. Só o que ela não entender vai pra IA (Gemini).
+// Tudo respeita o perfil da conta, igual às telas do app:
+//   anônimo  → eventos públicos, versinhos, próximos aniversários, agenda
+//   usuário  → tudo das abas (inclusive eventos privados); lançamentos só ver
+//   editor   → igual usuário + editar lançamentos; não vê eventos privados
+//   admin    → tudo + aprovar/recusar/alterar contas
+// Ações abrem a PRÓPRIA tela do app já preenchida — a pessoa confere e toca em
+// Salvar (mesmas validações do app). Exclusões e ações de admin pedem
+// confirmação aqui no chat antes.
+
+function _glPerfil() {
+  if (!_autenticado) return 'anonimo';
+  if (_isAdmin) return 'admin';
+  if (_isEditor) return 'editor';
+  return 'usuario';
+}
+const _GL_NOME_PERFIL = { anonimo: 'visitante (sem login)', usuario: 'Usuário', editor: 'Editor', admin: 'Administrador' };
+// nivel: 'todos' | 'logado' | 'editor' (editor ou admin) | 'admin'
+function _glPode(nivel) {
+  var p = _glPerfil();
+  if (nivel === 'todos') return true;
+  if (nivel === 'logado') return p !== 'anonimo';
+  if (nivel === 'editor') return p === 'editor' || p === 'admin';
+  if (nivel === 'admin') return p === 'admin';
+  return false;
+}
+function _glNegado(nivel) {
+  if (_glPerfil() === 'anonimo') {
+    return { texto: 'Para isso você precisa entrar na sua conta 🔐', botoes: [{ rotulo: '🔑 Entrar', fn: function(){ fecharGlorinha(); authMostrarLogin(); } }] };
+  }
+  return { texto: nivel === 'admin' ? 'Essa função é só para **Administradores** ⛔' : 'Essa função é só para **Editores e Administradores** ⛔' };
+}
+
+// ── Texto ──
+function _glNorm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9/:,.\s-]/g, ' ').replace(/\s+/g, ' ').trim(); }
+const _GL_MESES = ['janeiro','fevereiro','marco','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+const _GL_DIAS = ['domingo','segunda','terca','quarta','quinta','sexta','sabado'];
+function _glIso(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+function _glFmt(iso) { return iso ? iso.slice(8,10) + '/' + iso.slice(5,7) + '/' + iso.slice(0,4) : ''; }
+function _glHoje() { var d = new Date(); d.setHours(12,0,0,0); return d; }
+
+// Data mencionada no texto (hoje, amanhã, domingo, 15/11, dia 15 de novembro...)
+function _glData(t) {
+  var hoje = _glHoje(), m;
+  if (/depois de amanha/.test(t)) { hoje.setDate(hoje.getDate()+2); return _glIso(hoje); }
+  if (/\bamanha\b/.test(t)) { hoje.setDate(hoje.getDate()+1); return _glIso(hoje); }
+  if (/\bontem\b/.test(t)) { hoje.setDate(hoje.getDate()-1); return _glIso(hoje); }
+  if (/\bhoje\b/.test(t)) return _glIso(hoje);
+  if ((m = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/))) {
+    var ano = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : hoje.getFullYear();
+    var d1 = new Date(ano, +m[2]-1, +m[1], 12);
+    if (!m[3] && d1 < hoje && (hoje - d1) > 60*86400000) d1.setFullYear(ano + 1);
+    return _glIso(d1);
+  }
+  if ((m = t.match(/\b(?:dia )?(\d{1,2}) de (janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?: de (\d{4}))?/))) {
+    var d2 = new Date(m[3] ? +m[3] : hoje.getFullYear(), _GL_MESES.indexOf(m[2]), +m[1], 12);
+    if (!m[3] && d2 < hoje && (hoje - d2) > 60*86400000) d2.setFullYear(d2.getFullYear() + 1);
+    return _glIso(d2);
+  }
+  for (var i = 0; i < 7; i++) {
+    if (new RegExp('\\b' + _GL_DIAS[i] + '(-feira)?\\b').test(t)) {
+      var passado = /\b(passado|passada|ultimo|ultima)\b/.test(t);
+      var dif = (i - hoje.getDay() + 7) % 7;
+      if (passado) dif = dif === 0 ? -7 : dif - 7;
+      else if (dif === 0 && /\b(proximo|proxima|que vem)\b/.test(t)) dif = 7;
+      hoje.setDate(hoje.getDate() + dif);
+      return _glIso(hoje);
+    }
+  }
+  if ((m = t.match(/\bdia (\d{1,2})\b/))) {
+    var d3 = new Date(hoje.getFullYear(), hoje.getMonth(), +m[1], 12);
+    if (d3 < hoje) d3.setMonth(d3.getMonth() + 1);
+    return _glIso(d3);
+  }
+  return null;
+}
+function _glHora(t) {
+  var m = t.match(/\b(?:as |a )?(\d{1,2})(?::(\d{2})|h(\d{2})?|\s?horas?)\b/);
+  if (!m) return null;
+  var h = +m[1], min = m[2] || m[3] || '00';
+  if (/\b(da noite|da tarde)\b/.test(t) && h < 12) h += 12;
+  return h <= 23 ? String(h).padStart(2,'0') + ':' + min : null;
+}
+function _glMes(t) {
+  for (var i = 0; i < 12; i++) if (new RegExp('\\b' + _GL_MESES[i] + '\\b').test(t)) return i + 1;
+  if (/\b(este|esse|deste|desse|neste|nesse) mes\b/.test(t)) return new Date().getMonth() + 1;
+  if (/\bmes que vem\b|\bproximo mes\b/.test(t)) return (new Date().getMonth() + 1) % 12 + 1;
+  return null;
+}
+function _glNumero(t, padrao) { var m = t.match(/\b(\d{1,2})\b/); return m ? +m[1] : padrao; }
+function _glGenero(t) { if (/\birmas\b|\bmocas\b|\bmeninas\b|\bfeminin/.test(t)) return 'F'; if (/\birmaos\b|\bmocos\b|\bmeninos\b|\bmasculin/.test(t)) return 'M'; return null; }
+function _glCont(t) { var m = t.match(/\b([1-5])\s?(?:a|ª)?\s?cont/); return m ? m[1] : null; }
+
+// ── Dados ──
+function _glReunioesRealizadas() {
+  var hoje = _glIso(_glHoje());
+  return (DB.meetings || []).filter(function(r){ return r && (!r.isScheduled || (r.present && r.present.length)) && String(r.date).slice(0,10) <= hoje; })
+    .sort(function(a, b){ return String(b.date).localeCompare(String(a.date)); });
+}
+function _glRotulo(m) { return m.nome + ' (' + (m.genero === 'F' ? 'irmã' : 'irmão') + ', ' + contLabel(m) + ')'; }
+function _glPresente(r, m) { return (r.present || []).map(String).indexOf(String(m.id)) >= 0; }
+// Membros citados no texto: nome completo > primeiro nome > parecido (erro de digitação)
+function _glMembrosNoTexto(t) {
+  var membros = (DB.members || []).filter(Boolean), achados = [];
+  membros.forEach(function(m){ var n = _glNorm(m.nome); if (n && (' ' + t + ' ').indexOf(' ' + n + ' ') >= 0) achados.push({ m: m, s: 100 + n.length }); });
+  if (!achados.length) membros.forEach(function(m){ var p = _glNorm(m.nome).split(' ')[0]; if (p.length >= 3 && new RegExp('\\b' + p + '\\b').test(t)) achados.push({ m: m, s: 50 }); });
+  if (!achados.length && typeof _distanciaEdicao === 'function') {
+    var palavras = t.split(' ').filter(function(w){ return w.length >= 4; });
+    membros.forEach(function(m){ var p = _glNorm(m.nome).split(' ')[0]; if (p.length >= 4 && palavras.some(function(w){ return _distanciaEdicao(w, p) <= 1; })) achados.push({ m: m, s: 10 }); });
+  }
+  if (!achados.length) return [];
+  var melhor = Math.max.apply(null, achados.map(function(a){ return a.s; }));
+  return achados.filter(function(a){ return a.s === melhor; }).map(function(a){ return a.m; });
+}
+// Quando o nome é ambíguo, pergunta qual (botões); senão segue com o único
+function _glComMembro(t, fazer, semNome) {
+  var ms = _glMembrosNoTexto(t);
+  if (!ms.length) return { texto: semNome || 'Não achei esse nome no cadastro de membros 🤔 Pode escrever o nome como está no cadastro?' };
+  if (ms.length > 1) return { texto: 'Encontrei mais de uma pessoa com esse nome. Qual delas?', botoes: ms.slice(0, 6).map(function(m){ return { rotulo: _glRotulo(m), fn: function(){ return fazer(m); } }; }) };
+  return fazer(ms[0]);
+}
+function _glEventosVisiveis() {
+  var p = _glPerfil();
+  return (DB.events || []).filter(function(e){ return e && (!e.privado || p === 'admin' || p === 'usuario'); });
+}
+// Abre uma tela do app: fecha a Glorinha primeiro (ela fica por cima)
+function _glAbrir(fn, aviso) {
+  return function() { fecharGlorinha(); setTimeout(function(){ try { fn(); if (aviso) showToast(aviso); } catch(e) { console.warn('Glorinha: falha ao abrir tela', e); showToast('⚠️ Não consegui abrir essa tela'); } }, 250); };
+}
+function _glDefinir(id, valor) { var el = document.getElementById(id); if (!el) return; if (el.type === 'checkbox') el.checked = !!valor; else el.value = valor == null ? '' : valor; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }
+// Texto "livre" depois de uma palavra-chave, sem as partes de data/hora/local
+function _glResto(original, depoisDe) {
+  var o = String(original), i = o.search(depoisDe);
+  if (i < 0) return '';
+  var s = o.slice(i).replace(depoisDe, '');
+  if (s.indexOf(':') >= 0) s = s.slice(s.indexOf(':') + 1);
+  return s.replace(/\b(dia|para o dia|no dia)\s+\d{1,2}(\/\d{1,2}(\/\d{2,4})?)?(\s+de\s+\w+)?/gi, ' ')
+    .replace(/\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/g, ' ')
+    .replace(/\b(às|as|a)\s+\d{1,2}(:\d{2}|h\d{0,2})?\b/gi, ' ').replace(/\b\d{1,2}(:\d{2}|h\d{0,2})\b/gi, ' ')
+    .replace(/\b(hoje|amanhã|amanha|depois de amanhã|domingo|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado)(-feira)?\b/gi, ' ')
+    .replace(/\b(privado|privada)\b/gi, ' ')
+    .replace(/\s+(na|no|em)\s+[^,]+$/i, ' ')
+    .replace(/^[\s,:;.\-–—]+|[\s,:;.\-–—]+$/g, '').replace(/\s{2,}/g, ' ');
+}
+function _glLocal(original) { var m = String(original).match(/\s(?:na|no|em)\s+([^,.]+?)\s*$/i); return m ? m[1].trim() : ''; }
+
+// ── Intenções (a primeira que bater responde) ──
+const _GL_INTENCOES = [
+  // Saudação / identidade / ajuda
+  { re: /^(oi|ola|opa|e ai|bom dia|boa tarde|boa noite|paz de deus|a paz de deus)\b.{0,15}$/, nivel: 'todos', fazer: function() {
+      return { texto: 'Paz de Deus' + (_userName ? ', ' + String(_userName).split(' ')[0] : '') + '! 😊 Em que posso te ajudar? Se quiser saber o que eu faço, é só dizer **ajuda**.' }; } },
+  { re: /\b(seu nome|quem e voce|quem voce e|como (voce )?se chama)\b/, nivel: 'todos', fazer: function() {
+      return { texto: 'Eu sou a **Glorinha**, a assistente do app da Mocidade Parque Macedo 😊' }; } },
+  { re: /\b(ajuda|o que voce (faz|sabe|pode)|comandos|como (te )?uso)\b/, nivel: 'todos', fazer: function() { return _glAjuda(); } },
+  { re: /\b(obrigad[oa]|valeu|brigad[oa])\b/, nivel: 'todos', fazer: function() { return { texto: 'Por nada! Deus abençoe 🙏😊' }; } },
+
+  // Entrar / sair / tema / instalar
+  { re: /\b(sair|deslogar|logout|desconectar)\b/, nivel: 'logado', fazer: function() {
+      return { texto: 'Quer mesmo sair da sua conta?', botoes: [{ rotulo: '🚪 Sim, sair', fn: function(){ fecharGlorinha(); authLogout(); } }] }; } },
+  { re: /^(quero )?entrar$|\b(fazer login|logar|login)\b|\bentrar na (minha )?conta\b|\bacessar (minha )?conta\b/, nivel: 'todos', fazer: function() {
+      if (_autenticado) return { texto: 'Você já está conectado(a) como **' + _userName + '** (' + _GL_NOME_PERFIL[_glPerfil()] + ') 😊' };
+      return { texto: 'Vou abrir a tela de entrar 🔑', depois: _glAbrir(authMostrarLogin) }; } },
+  { re: /\b(tema|modo) (escuro|noturno|claro)\b|\b(escurecer|clarear) (o )?app\b/, nivel: 'todos', fazer: function(t) {
+      var escuro = /escuro|noturno|escurecer/.test(t);
+      setTema(escuro ? 'escuro' : 'claro');
+      return { texto: escuro ? 'Pronto, deixei no **modo escuro** 🌙' : 'Pronto, deixei no **modo claro** ☀️' }; } },
+  { re: /\b(instalar|baixar|download)\b.*\b(app|aplicativo)\b|\binstalar\b/, nivel: 'todos', fazer: function() {
+      return { texto: 'Vou abrir a tela de instalar o app 📲', depois: _glAbrir(abrirModalDownload) }; } },
+
+  // ── Administração ──
+  { re: /\b(pendentes?|aguardando aprovacao|solicitac|cadastros? novos?|contas? novas?)\b/, nivel: 'admin', fazer: function() {
+      var us = _getUsers(), pend = us.map(function(u, i){ return { u: u, i: i }; }).filter(function(x){ return x.u && x.u.status !== 'approved' && x.u.status !== 'rejected' && x.u.status !== 'disabled'; });
+      if (!pend.length) return { texto: 'Não há nenhuma conta aguardando aprovação 👍' };
+      return { texto: '**' + pend.length + '** conta(s) aguardando aprovação:\n' + pend.map(function(x){ return '* ' + x.u.nome + ' — ' + x.u.email; }).join('\n') + '\n\nPara aprovar, diga por exemplo: **aprovar ' + pend[0].u.nome.split(' ')[0] + ' como editor**.' }; } },
+  { re: /\b(aprova|aprovar|aceita|aceitar|libera|liberar)\b/, nivel: 'admin', fazer: function(t) {
+      return _glComUsuario(t, function(x) {
+        var perfil = /\badmin/.test(t) ? 'admin' : /\beditor/.test(t) ? 'editor' : 'usuario';
+        return { texto: 'Aprovar **' + x.u.nome + '** (' + x.u.email + ') como **' + _GL_NOME_PERFIL[perfil] + '**?', botoes: [{ rotulo: '✅ Confirmar', fn: function(){ aprovarUsuario(x.i, perfil === 'admin', perfil === 'editor'); return { texto: '✅ ' + x.u.nome + ' aprovado(a) como ' + _GL_NOME_PERFIL[perfil] + '!' }; } }] };
+      }, true); } },
+  { re: /\b(recusa|recusar|rejeita|rejeitar|nega|negar)\b/, nivel: 'admin', fazer: function(t) {
+      return _glComUsuario(t, function(x) {
+        return { texto: 'Recusar a solicitação de **' + x.u.nome + '** (' + x.u.email + ')?', botoes: [{ rotulo: '🗑 Recusar', fn: function(){ rejeitarUsuario(x.i); return { texto: 'Solicitação de ' + x.u.nome + ' recusada.' }; } }] };
+      }, true); } },
+  { re: /\b(desabilita|desabilitar|bloqueia|bloquear|reativa|reativar|desbloqueia|desbloquear|habilita|habilitar|ativa a conta|ativar a conta)\b/, nivel: 'admin', fazer: function(t) {
+      return _glComUsuario(t, function(x) {
+        if (x.u.email === _userEmail) return { texto: 'Não posso mexer na sua própria conta por aqui 😅' };
+        var desab = x.u.status !== 'disabled';
+        return { texto: (desab ? 'Desabilitar' : 'Reativar') + ' a conta de **' + x.u.nome + '**?', botoes: [{ rotulo: desab ? '🚫 Desabilitar' : '✅ Reativar', fn: function(){ alternarDesabilitado(x.i); return { texto: desab ? '🚫 Conta de ' + x.u.nome + ' desabilitada.' : '✅ Conta de ' + x.u.nome + ' reativada.' }; } }] };
+      }); } },
+  { re: /\b(torna|tornar|transforma|transformar|muda|mudar|altera|alterar|coloca|colocar|faz|fazer|deixa|deixar|promove|promover)\b.*\b(admin|administrador|editor|usuario comum|usuario)\b/, nivel: 'admin', fazer: function(t) {
+      return _glComUsuario(t, function(x) {
+        if (x.u.email === _userEmail) return { texto: 'Não posso mudar o seu próprio perfil por aqui 😅' };
+        var perfil = /\badmin/.test(t) ? 'admin' : /\beditor/.test(t) ? 'editor' : 'usuario';
+        return { texto: 'Mudar o perfil de **' + x.u.nome + '** para **' + _GL_NOME_PERFIL[perfil] + '**?', botoes: [{ rotulo: '✅ Confirmar', fn: function(){ definirPerfil(x.i, perfil); return { texto: '✅ Agora ' + x.u.nome + ' é ' + _GL_NOME_PERFIL[perfil] + '.' }; } }] };
+      }); } },
+  { re: /\b(contas|usuarios cadastrados|lista de usuarios|quem tem (acesso|conta)|administradores|editores)\b/, nivel: 'admin', fazer: function() {
+      var us = _getUsers().filter(function(u){ return u && u.status === 'approved'; });
+      var grupo = function(f){ return us.filter(f).map(function(u){ return u.nome; }).join(', ') || '—'; };
+      return { texto: '**Contas ativas (' + us.length + '):**\n* 👑 Admins: ' + grupo(function(u){ return u.isAdmin; }) + '\n* ✏️ Editores: ' + grupo(function(u){ return u.isEditor && !u.isAdmin; }) + '\n* 👤 Usuários: ' + grupo(function(u){ return !u.isAdmin && !u.isEditor; }) }; } },
+
+  // ── Ações: criar / lançar / editar / excluir ──
+  { re: /\b(apaga|apagar|exclui|excluir|remove|remover|deleta|deletar|cancela|cancelar)\b.*\bevento\b/, nivel: 'logado', fazer: function(t) {
+      return _glComEvento(t, function(e) {
+        return { texto: 'Excluir o evento **' + e.titulo + '** de ' + _glFmt(e.data) + '?', botoes: [{ rotulo: '🗑 Excluir', fn: function(){ deletarEvento(e.id); return { texto: '🗑 Evento "' + e.titulo + '" excluído.' }; } }] };
+      }); } },
+  { re: /\b(edita|editar|altera|alterar|muda|mudar|corrige|corrigir|atualiza|atualizar)\b.*\bevento\b/, nivel: 'logado', fazer: function(t) {
+      return _glComEvento(t, function(e) { return { texto: 'Abri o evento **' + e.titulo + '** para você editar ✏️', depois: _glAbrir(function(){ showSection('eventos'); editarEvento(e.id); }) }; }); } },
+  { re: /\b(cria|criar|crie|marca|marcar|agenda|agendar|adiciona|adicionar|cadastra|cadastrar|novo|nova|registra|registrar|coloca|colocar)\b.*\bevento\b|\bevento novo\b/, nivel: 'logado', fazer: function(t, original) {
+      var dados = { titulo: _glResto(original, /\bevento\b/i), data: _glData(t), horario: _glHora(t), local: _glLocal(original), privado: /\bprivad[oa]\b/.test(t) };
+      if (dados.privado && _glPerfil() === 'editor') dados.privado = false;
+      var resumo = ['* **Título:** ' + (dados.titulo || '— (preencha)'), '* **Data:** ' + (dados.data ? _glFmt(dados.data) : '— (preencha)')];
+      if (dados.horario) resumo.push('* **Horário:** ' + dados.horario);
+      if (dados.local) resumo.push('* **Local:** ' + dados.local);
+      if (dados.privado) resumo.push('* 🔒 Privado');
+      return { texto: 'Abri o cadastro de evento já preenchido ✍️\n' + resumo.join('\n') + '\n\nConfira e toque em **Salvar**.', depois: _glAbrir(function() {
+        showSection('eventos');
+        _editEventoId = null;
+        var tit = document.querySelector('#modal-evento .modal-title'); if (tit) tit.textContent = '📅 Novo Evento';
+        ['ev-titulo','ev-data','ev-horario','ev-local','ev-obs'].forEach(function(id){ _glDefinir(id, ''); });
+        _glDefinir('ev-privado', false);
+        abrirModalEvento();
+        _glDefinir('ev-titulo', dados.titulo); _glDefinir('ev-data', dados.data); _glDefinir('ev-horario', dados.horario); _glDefinir('ev-local', dados.local); _glDefinir('ev-privado', dados.privado);
+      }) };
+    } },
+  { re: /\b(apaga|apagar|exclui|excluir|remove|remover|deleta|deletar|cancela|cancelar|desmarca|desmarcar)\b.*\bvisita\b/, nivel: 'logado', fazer: function(t) {
+      return _glComVisita(t, function(v) { return { texto: 'Excluir a visita na casa de **' + v.nome + '**' + (v.data ? ' (' + _glFmt(v.data) + ')' : '') + '? O app vai pedir confirmação.', depois: _glAbrir(function(){ showSection('visitas'); deletarVisitaLocal(v.id); }) }; }); } },
+  { re: /\b(edita|editar|altera|alterar|muda|mudar|remarca|remarcar|atualiza|atualizar)\b.*\bvisita\b/, nivel: 'logado', fazer: function(t) {
+      return _glComVisita(t, function(v) { return { texto: 'Abri a visita na casa de **' + v.nome + '** para você editar ✏️', depois: _glAbrir(function(){ showSection('visitas'); abrirModalVisitaLocal(v.id); }) }; }); } },
+  { re: /\b(cria|criar|marca|marcar|agenda|agendar|adiciona|adicionar|cadastra|cadastrar|nova|registra|registrar)\b.*\bvisita\b/, nivel: 'logado', fazer: function(t, original) {
+      var mNome = String(original).match(/\bcasa (?:d[aoe]s?|do irmao|da irma)\s+([A-Za-zÀ-ÿ' ]+?)(?=\s+(?:no|na|dia|hoje|amanh|domingo|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|[àa]s|\d)|[,.]|$)/i);
+      var dados = { nome: mNome ? mNome[1].trim() : '', data: _glData(t), horario: _glHora(t) };
+      return { texto: 'Abri o cadastro de visita já preenchido 🏠\n* **Casa de:** ' + (dados.nome || '— (preencha)') + '\n* **Data:** ' + (dados.data ? _glFmt(dados.data) : '— (preencha)') + (dados.horario ? '\n* **Horário:** ' + dados.horario : '') + '\n\nConfira e toque em **Salvar**.', depois: _glAbrir(function() {
+        showSection('visitas');
+        abrirModalVisitaLocal();
+        _glDefinir('vl-nome', dados.nome); _glDefinir('vl-data', dados.data); _glDefinir('vl-horario', dados.horario);
+      }) };
+    } },
+  { re: /\b(exclui|excluir|apaga|apagar|remove|remover|deleta|deletar)\b.*\b(membro|cadastro|irmao|irma|jovem)\b/, nivel: 'logado', fazer: function(t) {
+      return _glComMembro(t, function(m) { return { texto: 'Excluir o cadastro de **' + _glRotulo(m) + '**? Isso é permanente — o app vai pedir confirmação.', depois: _glAbrir(function(){ excluirMembroById(m.id); }) }; }); } },
+  { re: /\b(edita|editar|altera|alterar|atualiza|atualizar|corrige|corrigir|muda|mudar)\b.*\b(membro|cadastro|dados|telefone|endereco|nascimento|foto)\b/, nivel: 'logado', fazer: function(t) {
+      return _glComMembro(t, function(m) { return { texto: 'Abri o cadastro de **' + m.nome + '** para você editar ✏️', depois: _glAbrir(function(){ abrirEditarMembro(m.id); }) }; }); } },
+  { re: /\b(cadastra|cadastrar|adiciona|adicionar|novo|nova|cria|criar|inclui|incluir|registra|registrar)\b.*\b(membro|irmao|irma|jovem|crianca)\b/, nivel: 'logado', fazer: function(t, original) {
+      var mNome = String(original).match(/\b(?:membro|irm[aã]o|irm[aã]|jovem|crian[cç]a)\s+(?:chamad[oa]\s+)?([A-Za-zÀ-ÿ' ]{2,40}?)(?=\s+(?:da|do|na|no|nascid|\d)|[,.]|$)/i);
+      var genero = /\birma\b|\bmoca\b|\bmenina\b/.test(t) ? 'F' : /\birmao\b|\bmoco\b|\bmenino\b/.test(t) ? 'M' : '';
+      var cont = _glCont(t) || '';
+      var nascimento = /nasc/.test(t) ? _glData(t.slice(t.indexOf('nasc'))) : null;
+      return { texto: 'Abri o cadastro de novo membro ✍️' + (mNome ? '\n* **Nome:** ' + mNome[1].trim() : '') + (genero ? '\n* **' + (genero === 'F' ? 'Irmã' : 'Irmão') + '**' : '') + (cont ? '\n* **' + cont + 'ª Continuação**' : '') + '\n\nComplete os dados e toque em **Salvar**.', depois: _glAbrir(function() {
+        showSection('membros');
+        if (typeof fecharModalNovo === 'function') fecharModalNovo(); // limpa modo edição
+        ['novo-nome','novo-nascimento','novo-tel','novo-endereco','novo-pai-nome','novo-pai-tel','novo-mae-nome','novo-mae-tel'].forEach(function(id){ _glDefinir(id, ''); });
+        _glDefinir('novo-auxiliar', false);
+        abrirModalNovo();
+        if (mNome) _glDefinir('novo-nome', mNome[1].trim());
+        _glDefinir('novo-genero', genero);
+        if (typeof updateContinuacaoOptions === 'function') updateContinuacaoOptions();
+        if (cont) _glDefinir('novo-continuacao', cont);
+        if (nascimento) _glDefinir('novo-nascimento', nascimento);
+      }) };
+    } },
+  { nome: 'novaReuniao', re: /\b(nova|cria|criar|marca|marcar|cadastra|cadastrar|adiciona|adicionar)\b.*\breuniao\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glData(t);
+      return { texto: 'Abri o cadastro de nova Reunião de Jovens' + (data ? ' para **' + _glFmt(data) + '**' : '') + ' 📅 Confira e toque em **Salvar**.', depois: _glAbrir(function(){ showSection('historico'); abrirModalNovaRJ(); if (data) _glDefinir('nova-rj-data', data); }) };
+    } },
+  { re: /\b(lanca|lancar|marca|marcar|registra|registrar|faz|fazer|abre|abrir|passa|passar|tira|tirar)\b.*\b(presenca|chamada|lista de presenca)\b|\bchamada\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glData(t), rs = DB.meetings || [];
+      // "domingo" sozinho = o último domingo (presença se lança depois da reunião); "próximo domingo" = o que vem
+      if (data && data > _glIso(_glHoje()) && !/\b(proximo|proxima|que vem)\b/.test(t) && _GL_DIAS.some(function(d){ return t.indexOf(d) >= 0; })) {
+        var dv = new Date(data + 'T12:00:00'); dv.setDate(dv.getDate() - 7); data = _glIso(dv);
+      }
+      var r = data ? rs.find(function(x){ return x.date === data; }) : _glReunioesRealizadas()[0] || rs.slice().sort(function(a,b){ return String(b.date).localeCompare(String(a.date)); })[0];
+      if (!r) return { texto: data ? 'Não existe reunião cadastrada em **' + _glFmt(data) + '**. Quer criar?' : 'Não achei nenhuma reunião.', botoes: data ? [{ rotulo: '📅 Criar reunião', fn: function(){ return _GL_INTENCOES_POR_NOME.novaReuniao('nova reuniao ' + data.split('-').reverse().join('/')); } }] : null };
+      return { texto: 'Abri a presença da reunião de **' + _glFmt(r.date) + '** ✅ Marque quem veio e toque em **Salvar**.', depois: _glAbrir(function(){ showSection('historico'); abrirPresencaInterna(r.id || r.date); }) };
+    } },
+  { re: /\b(lanca|lancar|preenche|preencher|registra|registrar|edita|editar|abre|abrir)\b.*\b(lancamento|lancamentos|totais|contagem)\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glData(t) || ((_glReunioesRealizadas()[0] || {}).date);
+      if (!data) return { texto: 'Não achei a reunião. Diga a data, por exemplo: **lançamento do dia 26/10**.' };
+      var aviso = _glPode('editor') ? 'Abri o lançamento de **' + _glFmt(data) + '** 📝 Preencha e toque em **Salvar**.' : 'Abri o lançamento de **' + _glFmt(data) + '** 📝 (para você só ver — editar é para Editores e Admins).';
+      return { texto: aviso, depois: _glAbrir(function(){ showSection('lancamentos'); lancAbrirReuniao(data); }) };
+    } },
+  { re: /\b(nova|cria|criar|escreve|escrever|registra|registrar|lanca|lancar|faz|fazer|adiciona|adicionar)\b.*\bata\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glData(t);
+      return { texto: 'Abri uma nova ata' + (data ? ' de **' + _glFmt(data) + '**' : '') + ' 📋 Escreva o assunto e toque em **Salvar**.', depois: _glAbrir(function(){ showSection('atas'); abrirModalNovaAta(); if (data) _glDefinir('ata-data', data); }) };
+    } },
+  { nome: 'recitativo', re: /\b(lanca|lancar|registra|registrar|adiciona|adicionar|novo|nova|cria|criar|cadastra|cadastrar|ler|escaneia|escanear)\b.*\b(recitativos?|versinhos?|cartao|cartoes)\b/, nivel: 'logado', fazer: function(t) {
+      // Recitativo é para a próxima reunião: sem data, usa o próximo domingo
+      var g = _glGenero(t), c = _glCont(t), data = _glData(t) || (typeof getNextSundayDate === 'function' ? getNextSundayDate() : _glIso(_glHoje()));
+      var max = g === 'M' ? 3 : 5;
+      if (!g) return { texto: 'É recitativo de quem?', botoes: [{ rotulo: '👨 Irmãos', fn: function(){ return _GL_INTENCOES_POR_NOME.recitativo(t + ' irmaos'); } }, { rotulo: '👩 Irmãs', fn: function(){ return _GL_INTENCOES_POR_NOME.recitativo(t + ' irmas'); } }] };
+      if (!c || +c > max) return { texto: 'De qual continuação?', botoes: Array.from({ length: max }, function(_, i){ return { rotulo: (i+1) + 'ª Cont.', fn: function(){ return _GL_INTENCOES_POR_NOME.recitativo(t + ' ' + (i+1) + 'a cont'); } }; }) };
+      return { texto: 'Abri o recitativo d' + (g === 'F' ? 'as irmãs' : 'os irmãos') + ' da **' + c + 'ª Continuação** para **' + _glFmt(data) + '** 📖', depois: _glAbrir(async function(){ showSection('versinhos'); await vsAbrirGenero(g); await vsAbrirCont(String(c)); await vsAbrirModalRecitativoParaData(data); }) };
+    } },
+
+  // ── Membro: relatório / WhatsApp ──
+  { re: /\b(relatorio|ficha)\b/, nivel: 'logado', fazer: function(t) {
+      return _glComMembro(t, function(m) { return { texto: 'Abri o relatório de **' + m.nome + '** 📊', depois: _glAbrir(function(){ showSection('membros'); abrirRelatorioMembro(m.id); }) }; }, 'De quem é o relatório? Ex: **relatório do Gabriel**.'); } },
+  { re: /\b(whats|whatsapp|zap|manda mensagem|mandar mensagem|liga|ligar|telefone d)\b/, nivel: 'logado', fazer: function(t) {
+      return _glComMembro(t, function(m) { return { texto: 'Abrindo o WhatsApp de **' + m.nome + '** 💬', depois: _glAbrir(function(){ abrirWhatsAppMembro(m.id); }) }; }); } },
+
+  // ── Consultas ──
+  { re: /\b(online|conectad)/, nivel: 'logado', fazer: function() {
+      var us = window._usuariosOnline || [], vis = window._visitantesOnline || 0;
+      return { texto: '🟢 **' + us.length + '** pessoa(s) conectada(s)' + (us.length ? ': ' + us.map(function(u){ return u.nome; }).join(', ') : '') + (vis ? '\n👀 E ' + vis + ' visitante(s) sem login.' : '') }; } },
+  { re: /\b(faltou|faltaram|faltas|faltosos|ausentes?|nao (veio|vieram)|quem nao foi)\b/, nivel: 'logado', fazer: function(t) {
+      if (_glMembrosNoTexto(t).length) return _GL_INTENCOES_POR_NOME.frequencia(t); // ex: "quantas faltas o Filipe tem"
+      var n = Math.max(1, Math.min(20, _glNumero(t, /\bultima reuniao\b|\bdomingo\b/.test(t) ? 1 : 3)));
+      var rs = _glReunioesRealizadas().slice(0, n);
+      if (!rs.length) return { texto: 'Ainda não há reuniões realizadas registradas.' };
+      var f = (DB.members || []).filter(function(m){ return m && rs.every(function(r){ return !_glPresente(r, m); }); });
+      return { texto: (n === 1 ? 'Na reunião de ' : 'Em todas as últimas ' + rs.length + ' reuniões (') + rs.map(function(r){ return _glFmt(r.date); }).join(', ') + (n === 1 ? '' : ')') + ', **' + f.length + '** pessoa(s) faltaram:\n' + f.map(function(m){ return '* ' + _glRotulo(m); }).join('\n') }; } },
+  { nome: 'frequencia', re: /\b(frequencia|presencas?|quantas vezes|veio quantas|assiduidade)\b/, nivel: 'logado', fazer: function(t) {
+      if (/\b(mais|menos|ranking|melhores|piores)\b/.test(t)) return _GL_INTENCOES_POR_NOME.ranking(t);
+      return _glComMembro(t, function(m) {
+        var rs = _glReunioesRealizadas(), pres = rs.filter(function(r){ return _glPresente(r, m); }), seguidas = 0;
+        for (var i = 0; i < rs.length; i++) { if (_glPresente(rs[i], m)) break; seguidas++; }
+        return { texto: '**' + _glRotulo(m) + '**\n* **Presenças:** ' + pres.length + ' de ' + rs.length + ' reuniões (' + (rs.length ? Math.round(pres.length / rs.length * 100) : 0) + '%)\n* **Última presença:** ' + (pres[0] ? _glFmt(pres[0].date) : 'nunca') + '\n* **Faltas seguidas até hoje:** ' + seguidas,
+          botoes: [{ rotulo: '📊 Ver relatório completo', fn: _glAbrir(function(){ showSection('membros'); abrirRelatorioMembro(m.id); }) }] };
+      }, 'De quem você quer a frequência? Ex: **frequência do Filipe**.'); } },
+  { nome: 'ranking', re: /\b(ranking|mais (presente|frequente|assidu|veio|vieram)|menos (presente|frequente|assidu|veio|vieram)|quem mais veio|quem menos veio)/, nivel: 'logado', fazer: function(t) {
+      var rs = _glReunioesRealizadas(), menos = /\bmenos\b|\bpiores\b/.test(t), n = _glNumero(t, 10);
+      var arr = (DB.members || []).filter(Boolean).map(function(m){ return { m: m, p: rs.filter(function(r){ return _glPresente(r, m); }).length }; });
+      arr.sort(function(a, b){ return menos ? a.p - b.p : b.p - a.p; });
+      return { texto: (menos ? '**Menos presentes**' : '**Mais presentes**') + ' (' + rs.length + ' reuniões):\n' + arr.slice(0, n).map(function(x, i){ return '* ' + (i+1) + '. ' + _glRotulo(x.m) + ' — ' + x.p; }).join('\n') }; } },
+  { re: /\b(aniversari|aniversario|niver|faz anos|fazem anos|completa anos)/, nivel: 'todos', fazer: function(t) {
+      var mes = _glMes(t), hoje = _glHoje(), anon = !_glPode('logado');
+      var dias = anon ? 7 : (/\bsemana\b/.test(t) ? 7 : /\bhoje\b/.test(t) ? 0 : 30);
+      var lista = (DB.members || []).filter(function(m){ return m && m.nascimento; }).map(function(m) {
+        var n = m.nascimento, p = n.indexOf('-') >= 0 ? n.split('-') : n.split('/');
+        var dia = n.indexOf('-') >= 0 ? +p[2] : +p[0], mm = +p[1], ano = n.indexOf('-') >= 0 ? +p[0] : +p[2];
+        var d = new Date(hoje.getFullYear(), mm - 1, dia, 12);
+        if (!mes && d < hoje && _glIso(d) !== _glIso(hoje)) d.setFullYear(d.getFullYear() + 1);
+        return { m: m, d: d, mm: mm, idade: ano ? d.getFullYear() - ano : null };
+      }).filter(function(x){ return mes && !anon ? x.mm === mes : Math.round((x.d - hoje) / 86400000) <= dias && x.d >= new Date(hoje.getTime() - 3600000); })
+        .sort(function(a, b){ return a.d - b.d; });
+      var titulo = mes && !anon ? 'em **' + _GL_MESES[mes-1].replace('marco','março') + '**' : dias === 0 ? '**hoje**' : 'nos próximos **' + dias + ' dias**';
+      if (!lista.length) return { texto: 'Ninguém faz aniversário ' + titulo.replace(/\*\*/g, '') + ' 🎈' };
+      return { texto: '🎂 Aniversariantes ' + titulo + ':\n' + lista.map(function(x){ var h = _glIso(x.d) === _glIso(hoje); return '* ' + x.m.nome + ' — ' + String(x.d.getDate()).padStart(2,'0') + '/' + String(x.d.getMonth()+1).padStart(2,'0') + (x.idade && !anon ? ', completa ' + x.idade + ' anos' : '') + (h ? ' 🎉 **HOJE**' : ''); }).join('\n') + (anon && mes ? '\n\n(Para ver o mês inteiro, entre na sua conta 🔐)' : '') }; } },
+  { nome: 'agenda', re: /\b(agenda|eventos?|programacao|o que tem|o que vai ter|compromissos)\b/, nivel: 'todos', fazer: function(t) {
+      var hoje = _glIso(_glHoje()), mes = _glMes(t);
+      var evs = _glEventosVisiveis().filter(function(e){ return e.data >= hoje && (!mes || +e.data.slice(5,7) === mes); }).sort(function(a, b){ return a.data.localeCompare(b.data); });
+      var vis = _glPode('logado') ? (DB.visitas || []).filter(function(v){ return v && v.data && v.data >= hoje && (!mes || +v.data.slice(5,7) === mes); }).sort(function(a, b){ return a.data.localeCompare(b.data); }) : [];
+      if (!evs.length && !vis.length) return { texto: 'Não há eventos' + (_glPode('logado') ? ' nem visitas' : '') + ' marcados' + (mes ? ' para esse mês' : ' daqui pra frente') + ' 📭' };
+      var out = [];
+      if (evs.length) out.push('📅 **Eventos:**\n' + evs.slice(0, 15).map(function(e){ return '* ' + _glFmt(e.data) + (e.horario ? ' às ' + e.horario : '') + ' — ' + e.titulo + (e.local ? ' (' + e.local + ')' : '') + (e.privado ? ' 🔒' : ''); }).join('\n'));
+      if (vis.length) out.push('🏠 **Visitas:**\n' + vis.slice(0, 15).map(function(v){ return '* ' + _glFmt(v.data) + (v.horario ? ' às ' + v.horario : '') + ' — casa de ' + v.nome; }).join('\n'));
+      return { texto: out.join('\n\n') }; } },
+  { re: /\bvisitas?\b/, nivel: 'logado', fazer: function(t) { return _GL_INTENCOES_POR_NOME.agenda(t); } },
+  { nome: 'recitativos', re: /\b(recitativos?|versinhos?|quem recit|recitou|recitaram|vai recitar)\b/, nivel: 'todos', fazer: function(t) {
+      var data = _glData(t);
+      var vs = (DB.versinhos || []).filter(function(v){ return v && v.data && (data ? v.data === data : true); }).sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
+      if (!data && vs.length) { var ultima = vs[0].data; vs = vs.filter(function(v){ return v.data === ultima; }); data = ultima; }
+      if (!vs.length) return { texto: 'Não achei recitativos' + (data ? ' em ' + _glFmt(data) : '') + ' 📖' };
+      return { texto: '📖 Recitativos de **' + _glFmt(data) + '**:\n' + vs.map(function(v){
+        var lab = (v.genero === 'F' ? 'Irmãs' : 'Irmãos') + ' ' + v.cont + 'ª Cont.';
+        var linhas = (v.ordem || []).map(function(o, i){ return '   ' + (i+1) + '. ' + (o.membroNome || '?') + ' — ' + (o.ref || ''); }).join('\n');
+        return '* **' + lab + '**' + (v.auxiliarNome ? ' (aux. ' + v.auxiliarNome + ')' : '') + (linhas ? '\n' + linhas : ' — ainda sem nomes');
+      }).join('\n') }; } },
+  { re: /\b(ultima reuniao|como foi|quem veio|quem foi|quantos vieram|presentes|reuniao d[oe])\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glData(t), rs = _glReunioesRealizadas();
+      var r = data ? (DB.meetings || []).find(function(x){ return x.date === data; }) : rs[0];
+      if (!r) return { texto: data ? 'Não há reunião em ' + _glFmt(data) + '.' : 'Nenhuma reunião realizada ainda.' };
+      var pres = (DB.members || []).filter(function(m){ return m && _glPresente(r, m); });
+      var lanc = (DB.lancamentos || []).find(function(l){ return l && l.data === r.date; });
+      return { texto: '**' + (r.title || 'Reunião de Jovens') + ' — ' + _glFmt(r.date) + '**\n* **Presentes:** ' + pres.length + (lanc && lanc.total_geral ? '\n* **Total geral (lançamento):** ' + lanc.total_geral : '') + (pres.length ? '\n\n' + pres.map(function(m){ return m.nome; }).join(', ') : ''),
+        botoes: [{ rotulo: '📖 Ver recitativos', fn: function(){ return _GL_INTENCOES_POR_NOME.recitativos('recitativos ' + r.date.split('-').reverse().join('/')); } }] }; } },
+  { re: /\b(lancamentos?|total geral|totais)\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glData(t), ls = (DB.lancamentos || []).filter(Boolean).sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
+      var l = data ? ls.find(function(x){ return x.data === data; }) : ls[0];
+      if (!l) return { texto: 'Não achei lançamento' + (data ? ' em ' + _glFmt(data) : '') + '.' };
+      var c = function(k, r){ return l[k] ? '\n* ' + r + ': ' + l[k] : ''; };
+      return { texto: '📝 **Lançamento de ' + _glFmt(l.data) + '**' + c('casados','Casados') + c('musicos','Músicos') + c('meninos','Meninos') + c('mocos','Moços') + c('meninas','Meninas') + c('mocas','Moças') + c('individuais','Individuais') + c('total_recit','Total de recitativos') + c('total_geral','**Total geral**') }; } },
+  { re: /\batas?\b/, nivel: 'logado', fazer: function() {
+      var as = (DB.atas || []).filter(Boolean).sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
+      if (!as.length) return { texto: 'Ainda não há atas registradas 📋', botoes: [{ rotulo: '📋 Nova ata', fn: _glAbrir(function(){ showSection('atas'); abrirModalNovaAta(); }) }] };
+      return { texto: '📋 **Últimas atas:**\n' + as.slice(0, 8).map(function(a){ return '* ' + _glFmt(a.data) + (a.assunto ? ' — ' + String(a.assunto).slice(0, 60) : ''); }).join('\n'), botoes: [{ rotulo: '📋 Abrir Atas', fn: _glAbrir(function(){ showSection('atas'); }) }] }; } },
+  { re: /\b(atividades?|o que (fizeram|mudou|aconteceu)|ultimas alteracoes|historico de alteracoes)\b/, nivel: 'logado', fazer: function() {
+      var at = []; try { at = JSON.parse(localStorage.getItem('rj_atividades') || '[]'); } catch(e) {}
+      at = (Array.isArray(at) ? at : Object.values(at)).filter(Boolean).slice(0, 8);
+      if (!at.length) return { texto: 'Não há atividades registradas.' };
+      return { texto: '🕘 **Últimas atividades:**\n' + at.map(function(a){ return '* ' + (a.nome || '?') + ' ' + (a.descricao || '') + (a.quando ? ' (' + new Date(a.quando).toLocaleDateString('pt-BR') + ')' : ''); }).join('\n') }; } },
+  { re: /\b(quantos membros|total de membros|lista de membros|quem sao os membros|membros d[ao]|auxiliares|quem e auxiliar)\b/, nivel: 'logado', fazer: function(t) {
+      var ms = (DB.members || []).filter(Boolean), g = _glGenero(t), c = _glCont(t);
+      if (/auxiliar/.test(t)) ms = ms.filter(function(m){ return m.auxiliar; });
+      if (g) ms = ms.filter(function(m){ return m.genero === g; });
+      if (c) ms = ms.filter(function(m){ return String(m.continuacao) === c; });
+      return { texto: '👥 **' + ms.length + '** ' + (/auxiliar/.test(t) ? 'auxiliar(es)' : 'membro(s)') + (g ? (g === 'F' ? ' (irmãs)' : ' (irmãos)') : '') + (c ? ' da ' + c + 'ª Cont.' : '') + (ms.length <= 40 ? ':\n' + ms.map(function(m){ return '* ' + _glRotulo(m); }).join('\n') : '') }; } },
+
+  // ── Navegação ──
+  { re: /\b(abre|abrir|mostra|mostrar|vai para|ir para|vai pra|ir pra|leva|levar|entra em|entrar em|tela de|aba de|aba)\b/, nivel: 'todos', fazer: function(t) {
+      var abas = [['eventos','eventos|calendario','todos'],['versinhos','versinhos|recitativos','todos'],['lancamentos','lancamentos','logado'],['historico','historico|reunioes|presenca','logado'],['aniversarios','aniversarios|aniversariantes','logado'],['membros','membros|cadastros','logado'],['visitas','visitas','logado'],['atas','atas','logado'],['atividades','atividades','logado'],['perfil','perfil|minha conta|configurac','logado'],['admin','admin|administracao|painel','admin']];
+      for (var i = 0; i < abas.length; i++) {
+        if (new RegExp('\\b(' + abas[i][1] + ')').test(t)) {
+          if (!_glPode(abas[i][2])) return _glNegado(abas[i][2]);
+          var id = abas[i][0];
+          return { texto: 'Abrindo **' + id.charAt(0).toUpperCase() + id.slice(1) + '** 👉', depois: _glAbrir(function(){ showSection(id); }) };
+        }
+      }
+      return null;
+    } },
+];
+// Atalhos para reaproveitar intenções (botões de "qual?" e encadeamentos)
+const _GL_INTENCOES_POR_NOME = {};
+['frequencia', 'ranking', 'agenda', 'recitativos', 'recitativo', 'novaReuniao'].forEach(function(nome) {
+  _GL_INTENCOES_POR_NOME[nome] = function(texto) {
+    var it = _GL_INTENCOES.find(function(i){ return i.nome === nome; });
+    if (!_glPode(it.nivel)) return _glNegado(it.nivel);
+    return it.fazer(_glNorm(texto), texto);
+  };
+});
+
+function _glComUsuario(t, fazer, soPendentes) {
+  var us = _getUsers().map(function(u, i){ return { u: u, i: i }; }).filter(function(x){ return x.u && (!soPendentes || (x.u.status !== 'approved' && x.u.status !== 'rejected' && x.u.status !== 'disabled')); });
+  // Só palavras inteiras: senão uma conta chamada "ADM" casaria com a palavra "admin"
+  var temPalavra = function(trecho){ return trecho && new RegExp('(^|\\s)' + trecho.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)').test(t); };
+  var achados = us.filter(function(x){ return temPalavra(_glNorm(x.u.nome)) || temPalavra(_glNorm(x.u.email)); });
+  if (!achados.length) achados = us.filter(function(x){ var p = _glNorm(x.u.nome).split(' ')[0]; return p.length >= 3 && new RegExp('\\b' + p + '\\b').test(t); });
+  if (!achados.length) return { texto: soPendentes ? 'Não achei essa pessoa entre as contas pendentes. Diga **pendentes** para ver a lista.' : 'Não achei essa conta. Diga **contas** para ver a lista.' };
+  if (achados.length > 1) return { texto: 'Qual dessas contas?', botoes: achados.slice(0, 6).map(function(x){ return { rotulo: x.u.nome + ' — ' + x.u.email, fn: function(){ return fazer(x); } }; }) };
+  return fazer(achados[0]);
+}
+function _glComEvento(t, fazer) {
+  var data = _glData(t), evs = _glEventosVisiveis();
+  var palavras = t.split(' ').filter(function(w){ return w.length >= 4 && !/^(evento|apaga|apagar|exclui|excluir|remove|remover|deleta|deletar|cancela|cancelar|edita|editar|altera|alterar|muda|mudar|corrige|corrigir|atualiza|atualizar|amanha|domingo)$/.test(w); });
+  var achados = evs.filter(function(e){ return (data && e.data === data) || palavras.some(function(w){ return _glNorm(e.titulo).indexOf(w) >= 0; }); });
+  if (!achados.length) {
+    var prox = evs.filter(function(e){ return e.data >= _glIso(_glHoje()); }).sort(function(a, b){ return a.data.localeCompare(b.data); }).slice(0, 6);
+    if (!prox.length) return { texto: 'Não achei esse evento 🤔' };
+    return { texto: 'Qual evento?', botoes: prox.map(function(e){ return { rotulo: _glFmt(e.data) + ' — ' + e.titulo, fn: function(){ return fazer(e); } }; }) };
+  }
+  if (achados.length > 1) return { texto: 'Qual desses eventos?', botoes: achados.slice(0, 6).map(function(e){ return { rotulo: _glFmt(e.data) + ' — ' + e.titulo, fn: function(){ return fazer(e); } }; }) };
+  return fazer(achados[0]);
+}
+function _glComVisita(t, fazer) {
+  var data = _glData(t), vs = (DB.visitas || []).filter(function(v){ return v && v.data; });
+  var achados = vs.filter(function(v){ var n = _glNorm(v.nome).split(' ')[0]; return (data && v.data === data) || (n.length >= 3 && new RegExp('\\b' + n + '\\b').test(t)); });
+  if (!achados.length) {
+    var prox = vs.filter(function(v){ return v.data >= _glIso(_glHoje()); }).sort(function(a, b){ return a.data.localeCompare(b.data); }).slice(0, 6);
+    if (!prox.length) return { texto: 'Não achei essa visita 🤔' };
+    return { texto: 'Qual visita?', botoes: prox.map(function(v){ return { rotulo: _glFmt(v.data) + ' — ' + v.nome, fn: function(){ return fazer(v); } }; }) };
+  }
+  if (achados.length > 1) return { texto: 'Qual dessas visitas?', botoes: achados.slice(0, 6).map(function(v){ return { rotulo: _glFmt(v.data) + ' — ' + v.nome, fn: function(){ return fazer(v); } }; }) };
+  return fazer(achados[0]);
+}
+
+function _glAjuda() {
+  var p = _glPerfil(), l = [];
+  l.push('Você está como **' + _GL_NOME_PERFIL[p] + '**. Exemplos do que eu faço:');
+  l.push('* "agenda" · "eventos de novembro" · "recitativos de domingo" · "aniversários da semana"');
+  if (_glPode('logado')) {
+    l.push('* "quem faltou nas últimas 3 reuniões" · "frequência do Filipe" · "quem mais veio" · "como foi a última reunião"');
+    l.push('* "cria evento dia 15/11 às 19h: ensaio geral na CCB" · "marca visita na casa da Eliane sábado às 20h"');
+    l.push('* "cadastra membro João da 2ª cont" · "edita o cadastro do Gabriel" · "relatório da Ana"');
+    l.push('* "nova reunião dia 9/11" · "lançar presença de domingo" · "nova ata" · "lançar recitativo das irmãs 4ª cont"');
+    l.push('* "lançamento do dia 26/10"' + (_glPode('editor') ? ' (você pode editar)' : ' (só ver)') + ' · "quem está online" · "atividades"');
+  } else {
+    l.push('* Entrando na sua conta, eu faço muito mais 🔐 — diga **entrar**.');
+  }
+  if (_glPode('admin')) l.push('* 👑 "pendentes" · "aprovar Maria como editor" · "tornar João admin" · "desabilitar Pedro" · "contas"');
+  l.push('* "abre membros" · "modo escuro" · "instalar app"' + (_glPode('logado') ? ' · "sair"' : ''));
+  l.push('Se eu não entender, eu pergunto pra minha IA 😉');
+  return { texto: l.join('\n') };
+}
+
+// Tenta responder localmente. Devolve null se não entendeu (aí vai pra IA).
+function _glorinhaLocal(original) {
+  var t = _glNorm(original);
+  if (!t) return null;
+  for (var i = 0; i < _GL_INTENCOES.length; i++) {
+    var it = _GL_INTENCOES[i];
+    if (!it.re.test(t)) continue;
+    if (!_glPode(it.nivel)) return _glNegado(it.nivel);
+    var r = it.fazer(t, original);
+    if (r) return r;
+  }
+  return null;
+}
+
 // ════════ GLORINHA — ASSISTENTE DE IA ════════
 // Conversa com a função "glorinha" do Supabase (Gemini, plano gratuito). Por
 // enquanto ela só CONSULTA os dados do app — não cria, altera nem apaga nada.
@@ -12320,14 +12798,38 @@ const GLORINHA_AVATAR = '<svg viewBox="0 0 64 64" width="100%" height="100%" ari
   '</svg>';
 
 function abrirGlorinha() {
-  exigirAuth(function() {
-    document.getElementById('modal-glorinha').classList.add('open');
-    if (!_glorinhaHist.length) {
-      _glorinhaHist.push({ role: 'model', text: 'Oi' + (_userName ? ', ' + String(_userName).split(' ')[0] : '') + '! Paz de Deus 😊 Eu sou a **Glorinha**, a assistente da Mocidade. Posso te contar sobre faltas, frequência, aniversários, agenda e reuniões. O que você quer saber?' });
-    }
-    _glorinhaRender();
-    setTimeout(function(){ document.getElementById('glorinha-input').focus(); }, 150);
-  });
+  document.getElementById('modal-glorinha').classList.add('open');
+  // Se a pessoa entrou/saiu da conta desde a última conversa, recomeça (o que ela pode fazer mudou)
+  if (_glorinhaHist.length && _glorinhaHist._perfil !== _glPerfil()) _glorinhaHist = [];
+  if (!_glorinhaHist.length) {
+    _glorinhaHist._perfil = _glPerfil();
+    _glorinhaHist.push({ role: 'model', text: 'Oi' + (_userName ? ', ' + String(_userName).split(' ')[0] : '') + '! Paz de Deus 😊 Eu sou a **Glorinha**, a assistente da Mocidade. ' +
+      (_glPode('logado') ? 'Posso consultar e também fazer as coisas do app pra você — criar eventos, marcar visitas, lançar presença, recitativos e muito mais.' : 'Posso te contar a agenda, os recitativos e os próximos aniversários. Entrando na sua conta, eu faço muito mais 🔐') +
+      ' Diga **ajuda** para ver exemplos.' });
+  }
+  _glorinhaRender();
+  setTimeout(function(){ document.getElementById('glorinha-input').focus(); }, 150);
+}
+
+// Clique num botão dentro de uma resposta (Confirmar, "qual delas?", etc.)
+async function _glorinhaBotao(iMsg, iBotao) {
+  var msg = _glorinhaHist[iMsg];
+  if (!msg || !msg.botoes || msg.usado) return;
+  var b = msg.botoes[iBotao];
+  msg.usado = true; // cada pergunta com botões só pode ser respondida uma vez
+  _glorinhaHist.push({ role: 'user', text: b.rotulo });
+  _glorinhaRender();
+  var r;
+  try { r = await b.fn(); } catch(e) { console.warn('Glorinha (botão):', e); r = { texto: 'Ops, não consegui fazer isso 😕' }; }
+  if (r && r.texto) _glorinhaResponder(r);
+  else _glorinhaRender();
+}
+// Mostra a resposta do cérebro local e executa a ação dela (abrir tela etc.)
+function _glorinhaResponder(r) {
+  _glorinhaHist.push({ role: 'model', text: r.texto, botoes: r.botoes || null });
+  _glorinhaRender();
+  if (_glorinhaFalarResposta) { _glorinhaFalarResposta = false; _glorinhaFalar(r.texto); }
+  if (typeof r.depois === 'function') setTimeout(r.depois, 900); // dá tempo de ler a confirmação
 }
 function fecharGlorinha() {
   document.getElementById('modal-glorinha').classList.remove('open');
@@ -12354,13 +12856,18 @@ function _glorinhaFormatar(texto) {
 
 function _glorinhaRender() {
   var box = document.getElementById('glorinha-msgs');
-  var html = _glorinhaHist.map(function(m) {
+  var html = _glorinhaHist.map(function(m, iMsg) {
     var minha = m.role === 'user';
+    var botoes = (!minha && m.botoes && m.botoes.length && !m.usado)
+      ? '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">' + m.botoes.map(function(b, iB) {
+          return '<button class="btn btn-sm btn-primary" onclick="_glorinhaBotao(' + iMsg + ',' + iB + ')">' + String(b.rotulo).replace(/</g, '&lt;') + '</button>';
+        }).join('') + '</div>'
+      : '';
     return '<div style="display:flex;' + (minha ? 'justify-content:flex-end;' : 'gap:8px;align-items:flex-end;') + 'margin-bottom:10px;">' +
       (minha ? '' : '<div style="width:28px;height:28px;flex-shrink:0;">' + GLORINHA_AVATAR + '</div>') +
       '<div style="max-width:82%;padding:9px 12px;border-radius:14px;font-size:.86rem;line-height:1.45;' +
       (minha ? 'background:var(--primary);color:#fff;border-bottom-right-radius:4px;' : 'background:var(--bg);color:var(--text);border-bottom-left-radius:4px;') + '">' +
-      _glorinhaFormatar(m.text) + '</div></div>';
+      _glorinhaFormatar(m.text) + botoes + '</div></div>';
   }).join('');
   if (_glorinhaPensando) {
     html += '<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:10px;"><div style="width:28px;height:28px;flex-shrink:0;">' + GLORINHA_AVATAR + '</div>' +
@@ -12377,8 +12884,20 @@ async function glorinhaEnviar(textoSugestao, audio) {
   var texto = (textoSugestao || input.value || '').trim();
   if ((!texto && !audio) || _glorinhaPensando) return;
   input.value = '';
+
+  // 1º: o cérebro local (sem internet, sem limite). Só o que ele não entender vai pra IA.
+  if (!audio) {
+    var local = null;
+    try { local = _glorinhaLocal(texto); } catch(e) { console.warn('Glorinha (local):', e); }
+    if (local) {
+      _glorinhaHist.push({ role: 'user', text: texto });
+      _glorinhaResponder(local);
+      return;
+    }
+  }
+
   // A saudação inicial é só da tela; não vai pra IA
-  var mensagens = _glorinhaHist.slice(1).slice(-12);
+  var mensagens = _glorinhaHist.slice(1).slice(-12).map(function(m){ return { role: m.role, text: m.text }; });
   var bolha = { role: 'user', text: audio ? '🎤 …' : texto };
   if (!audio) mensagens = mensagens.concat([bolha]);
   _glorinhaHist.push(bolha);
@@ -12387,7 +12906,7 @@ async function glorinhaEnviar(textoSugestao, audio) {
   var respostaTexto;
   try {
     if (!navigator.onLine || !window._supabase) throw new Error('sem internet');
-    var corpo = { mensagens: mensagens, usuario: _userName || '' };
+    var corpo = { mensagens: mensagens, usuario: _userName || '', perfil: _glPerfil() };
     if (audio) corpo.audio = audio;
     var chamada = window._supabase.functions.invoke('glorinha', { body: corpo });
     var limite = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('tempo esgotado')); }, 90000); });
@@ -12484,7 +13003,7 @@ async function _glorinhaGravarAudio() {
       var wav = await _audioParaWav(new Blob(partes, { type: gr.mimeType || 'audio/webm' }));
       if (!wav) { showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo'); return; }
       _glorinhaFalarResposta = true;
-      glorinhaEnviar(null, { dados: wav, mime: 'audio/wav' });
+      _glorinhaTranscreverEEnviar({ dados: wav, mime: 'audio/wav' });
     } catch(e) {
       console.warn('Falha ao preparar o áudio:', e);
       showToast('Não consegui preparar o áudio 😕 Tente escrever a pergunta.');
@@ -12494,6 +13013,33 @@ async function _glorinhaGravarAudio() {
   _glorinhaGravador = gr;
   gr._limite = setTimeout(function(){ if (gr.state === 'recording') gr.stop(); }, 30000); // no máximo 30s
   _glorinhaSetOuvindo(true, '🔴 Gravando… toque no 🎤 de novo para enviar');
+}
+
+// Áudio gravado: a Glorinha só transcreve; o texto passa pelo cérebro local
+// primeiro, como se tivesse sido digitado (e só vai pra IA se ele não entender).
+async function _glorinhaTranscreverEEnviar(audio) {
+  var bolha = { role: 'user', text: '🎤 …' };
+  _glorinhaHist.push(bolha);
+  _glorinhaPensando = true;
+  _glorinhaRender();
+  var transcricao = '', aviso = '';
+  try {
+    if (!navigator.onLine || !window._supabase) throw new Error('sem internet');
+    var r = await Promise.race([
+      window._supabase.functions.invoke('glorinha', { body: { mensagens: [], audio: audio, soTranscrever: true, perfil: _glPerfil() } }),
+      new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('tempo esgotado')); }, 60000); })
+    ]);
+    if (r.error) throw r.error;
+    transcricao = (r.data && r.data.transcricao) || '';
+    aviso = (r.data && r.data.resposta) || '';
+  } catch(e) {
+    console.warn('Glorinha (transcrição):', e);
+    aviso = navigator.onLine ? 'Não consegui ouvir direitinho agora 😅 Tenta de novo ou escreve pra mim.' : 'Estou sem internet agora 📵 Escreve a pergunta pra mim!';
+  }
+  _glorinhaPensando = false;
+  _glorinhaHist.splice(_glorinhaHist.indexOf(bolha), 1);
+  if (!transcricao) { _glorinhaHist.push({ role: 'user', text: '🎤 (áudio)' }); _glorinhaResponder({ texto: aviso || 'Não ouvi nada 🙉' }); return; }
+  glorinhaEnviar(transcricao);
 }
 
 // Converte a gravação (cada aparelho grava num formato) para WAV 16 kHz mono,

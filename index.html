@@ -13413,16 +13413,19 @@ function _glorinhaFalar(texto, aoTerminar) {
   var voz = speechSynthesis.getVoices().find(function(v){ return /pt[-_]BR/i.test(v.lang); });
   if (voz) fala.voice = voz;
   var parar = document.getElementById('glorinha-parar-voz');
-  fala.onstart = function(){ parar.style.display = 'inline-block'; _glInterrupcaoIniciar(); };
+  fala.onstart = function(){ parar.style.display = 'inline-block'; };
   fala.onend = function(){
+    if (_glorinhaFalaAtual !== fala) return; // fala antiga, substituída por uma nova
+    _glorinhaFalaAtual = null;
     parar.style.display = 'none';
-    if (!fala._interrompida) _glInterrupcaoParar(); // interrompida: o ouvido ainda está terminando de ouvir o pedido
-    if (_glorinhaFalaAtual === fala) _glorinhaFalaAtual = null;
-    if (aoTerminar && !fala._interrompida) aoTerminar();
+    if (fala._interrompida) return; // interrompida por "Glorinha": o ouvido já virou o microfone
+    _glInterrupcaoParar();
+    if (aoTerminar) aoTerminar();
   };
-  fala.onerror = function(){ parar.style.display = 'none'; _glInterrupcaoParar(); };
+  fala.onerror = function(){ if (_glorinhaFalaAtual === fala) { _glorinhaFalaAtual = null; parar.style.display = 'none'; if (!fala._interrompida) _glInterrupcaoParar(); } };
   speechSynthesis.cancel();
   _glorinhaFalaAtual = fala;
+  _glInterrupcaoIniciar(); // o ouvido liga ANTES dela começar a falar
   speechSynthesis.speak(fala);
 }
 function _glorinhaPararVoz() {
@@ -13434,9 +13437,11 @@ function _glorinhaPararVoz() {
 }
 
 // ── Interromper dizendo "Glorinha" enquanto ela fala ──
-// Durante a fala fica um ouvido ligado só esperando "Glorinha": ela se cala na
-// hora (considera que você já ouviu) e liga o microfone para o próximo comando.
-// Se você já falou o pedido junto ("Glorinha, abre membros"), ele vai direto.
+// Um ouvido fica ligado durante a fala (ligado ANTES dela começar). Ela se cala
+// já no começo da palavra ("glor…", ainda no reconhecimento parcial, sem esperar
+// a frase terminar). E esse MESMO ouvido continua como microfone do chat — não
+// reinicia, então nada do que você fala logo em seguida se perde. O pedido (o que
+// vem depois de "Glorinha") é enviado depois de 2s de silêncio, como no 🎤.
 let _glInterrupcao = null;
 function _glInterrupcaoIniciar() {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -13445,39 +13450,51 @@ function _glInterrupcaoIniciar() {
   rec.lang = 'pt-BR';
   rec.continuous = true;
   rec.interimResults = true;
-  var concluido = false, espera = null;
-  var concluir = function(resto) {
-    if (concluido) return;
-    concluido = true;
-    clearTimeout(espera);
-    _glInterrupcaoParar();
-    setTimeout(function() {
-      if (!document.getElementById('modal-glorinha').classList.contains('open')) return;
-      _glorinhaModoVoz = true;
-      if (resto) { _glorinhaFalarResposta = true; glorinhaEnviar(resto); }
-      else if (!_glorinhaReconhecimento) glorinhaMicrofone();
-    }, 300);
-  };
+  var ouvindo = false, finais = [], parcial = '', cronometro = null;
+  var input = document.getElementById('glorinha-input');
+  var texto = function(){ return (finais.join(' ') + ' ' + parcial).replace(/\s+/g, ' ').trim(); };
+  var pedido = function(){ var t = texto(), m = t.match(/\bglor\S*[\s,!.]*/i); return m ? t.slice(m.index + m[0].length).trim() : ''; };
+  var encerrarEm = function(ms){ clearTimeout(cronometro); cronometro = setTimeout(function(){ try { rec.stop(); } catch(e) {} }, ms); };
   rec.onresult = function(e) {
+    parcial = '';
     for (var i = e.resultIndex; i < e.results.length; i++) {
-      var n = _glNorm(e.results[i][0].transcript || ''), m = n.match(/\bglorin(h)?a\b/);
-      if (!m) continue;
-      if (!espera) {
-        // Ouviu "Glorinha": cala na hora, mas continua ouvindo o resto da frase
-        if (_glorinhaFalaAtual) _glorinhaFalaAtual._interrompida = true;
-        speechSynthesis.cancel();
-        document.getElementById('glorinha-parar-voz').style.display = 'none';
-        espera = setTimeout(function(){ concluir(''); }, 1500);
-      }
-      if (e.results[i].isFinal) concluir(n.slice(m.index + m[0].length).replace(/^[\s,!.]+/, ''));
-      return;
+      var trecho = String(e.results[i][0].transcript || '').trim();
+      if (!trecho) continue;
+      if (!e.results[i].isFinal) { parcial = trecho; continue; }
+      var ultimo = finais[finais.length - 1];
+      if (ultimo && _glNorm(trecho).indexOf(_glNorm(ultimo)) === 0) finais[finais.length - 1] = trecho;
+      else if (!ultimo || _glNorm(ultimo).indexOf(_glNorm(trecho)) !== 0) finais.push(trecho);
     }
+    if (!ouvindo) {
+      if (!/\bglor/.test(_glNorm(texto()))) return;
+      // "glor…": cala NA HORA
+      ouvindo = true;
+      if (_glorinhaFalaAtual) _glorinhaFalaAtual._interrompida = true;
+      speechSynthesis.cancel();
+      document.getElementById('glorinha-parar-voz').style.display = 'none';
+      // e este mesmo ouvido passa a ser o microfone do chat
+      _glInterrupcao = null;
+      _glorinhaReconhecimento = rec;
+      _glorinhaModoVoz = true;
+      _glorinhaSetOuvindo(true, '🔴 Ouvindo… pode falar. Envio depois de 2s em silêncio (ou toque no 🎤)');
+    }
+    input.value = pedido();
+    encerrarEm(pedido() ? GLORINHA_PAUSA_MS : GLORINHA_ESPERA_MS);
   };
   rec.onend = function() {
-    if (espera && !concluido) { concluir(''); return; } // encerrou no meio da espera: liga o microfone
+    clearTimeout(cronometro);
+    if (ouvindo) {
+      if (_glorinhaReconhecimento === rec) _glorinhaReconhecimento = null;
+      _glorinhaSetOuvindo(false);
+      if (!document.getElementById('modal-glorinha').classList.contains('open')) return; // fechou o chat
+      var p = pedido();
+      if (p) { _glorinhaFalarResposta = true; glorinhaEnviar(p); }
+      else showToast('Não ouvi o pedido 🙉 Toque no 🎤 e fale');
+      return;
+    }
     if (_glInterrupcao !== rec) return;
     _glInterrupcao = null;
-    if ('speechSynthesis' in window && speechSynthesis.speaking) setTimeout(_glInterrupcaoIniciar, 200); // ainda falando: volta a ouvir
+    if ('speechSynthesis' in window && speechSynthesis.speaking) setTimeout(_glInterrupcaoIniciar, 100); // ainda falando: volta a ouvir
   };
   try { rec.start(); _glInterrupcao = rec; } catch(e) { _glInterrupcao = null; }
 }

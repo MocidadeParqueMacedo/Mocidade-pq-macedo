@@ -18,26 +18,109 @@
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<!-- Firebase -->
+<!-- Banco de dados: Supabase (antes era o Firebase Realtime Database) -->
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getDatabase, ref, set, get, onValue, push, remove, update }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-  import { getMessaging, getToken, onMessage }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
+  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 
-  const firebaseConfig = {
-    apiKey: "AIzaSyCjU1jeWCFFeoDhCylj_rx_Eo5EwleU75c",
-    authDomain: "mocidade-parque-macedo.firebaseapp.com",
-    databaseURL: "https://mocidade-parque-macedo-default-rtdb.firebaseio.com",
-    projectId: "mocidade-parque-macedo",
-    storageBucket: "mocidade-parque-macedo.firebasestorage.app",
-    messagingSenderId: "357935733252",
-    appId: "1:357935733252:web:8e720ceb0c84caafddf351"
-  };
+  // ── Camada de compatibilidade com a API do Firebase Realtime Database ─────
+  // Os dados ficam na tabela "kv" do Supabase (caminho → JSON), lidos e gravados
+  // pelas funções kv_get / kv_set / kv_update / kv_remove do banco. Assim o resto
+  // do app continua usando ref/get/set/update/remove/onValue como antes.
+  const SUPABASE_URL = "https://ofephqwjlxvemkohcmcu.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_JS5fjrUZsR5zV6d1fNIZfQ_fr3h6vxz";
+  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+  const rtdb = { supabase };
+  window._supabase = supabase;
 
-  const firebaseApp = initializeApp(firebaseConfig);
-  const rtdb = getDatabase(firebaseApp);
+  function _limpaCaminho(p) { return String(p || '').replace(/^\/+|\/+$/g, ''); }
+  // Linha da tabela que guarda o caminho (mesma regra da função _kv_doc do banco)
+  function _docDe(path) {
+    const s = _limpaCaminho(path).split('/');
+    return (s[0] === 'app' && s.length >= 2) ? 'app/' + s[1] : s[0];
+  }
+  async function _rpc(fn, args) {
+    const { data, error } = await supabase.rpc(fn, args);
+    if (error) throw new Error(fn + ': ' + error.message);
+    return data;
+  }
+  function _snapshot(path, val) {
+    const v = (val === undefined) ? null : val;
+    return { key: _limpaCaminho(path).split('/').pop(), exists: () => v !== null, val: () => v };
+  }
+
+  function ref(db, path) { return { path: _limpaCaminho(path) }; }
+  async function get(r) { return _snapshot(r.path, await _rpc('kv_get', { p: r.path })); }
+  async function set(r, value) { await _rpc('kv_set', { p: r.path, v: value === undefined ? null : value }); }
+  async function update(r, value) { await _rpc('kv_update', { p: r.path, v: value }); }
+  async function remove(r) { await _rpc('kv_remove', { p: r.path }); }
+
+  // ── Tempo real: um único canal escuta todas as mudanças da tabela kv ──────
+  const _ouvintes = new Set();           // { path, doc, cb, errCb, ultimo, seq }
+  const _ouvintesConexao = new Set();    // callbacks de '.info/connected'
+  let _conectado = false;
+
+  async function _recarregar(o) {
+    const seq = ++o.seq;
+    try {
+      const val = await _rpc('kv_get', { p: o.path });
+      if (seq !== o.seq || !_ouvintes.has(o)) return; // resposta antiga ou ouvinte cancelado
+      const json = JSON.stringify(val);
+      if (json === o.ultimo) return;                  // nada mudou neste caminho
+      o.ultimo = json;
+      o.cb(_snapshot(o.path, val));
+    } catch (e) {
+      if (o.errCb) o.errCb(e); else console.warn('Leitura em tempo real falhou:', o.path, e);
+    }
+  }
+
+  supabase.channel('kv-mudancas')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'kv' }, (payload) => {
+      const doc = (payload.new && payload.new.path) || (payload.old && payload.old.path);
+      _ouvintes.forEach((o) => { if (!doc || o.doc === doc || o.doc === 'app' && doc.startsWith('app/')) _recarregar(o); });
+    })
+    .subscribe((status) => {
+      const agora = status === 'SUBSCRIBED';
+      if (agora && !_conectado) {
+        // (Re)conectou: relê tudo, pois mudanças podem ter passado enquanto estava fora
+        _ouvintes.forEach(_recarregar);
+        _ouvintesConexao.forEach((cb) => { try { cb(_snapshot('connected', true)); } catch (e) {} });
+      }
+      _conectado = agora;
+    });
+
+  function onValue(r, cb, errCb) {
+    if (r.path === '.info/connected') {
+      _ouvintesConexao.add(cb);
+      if (_conectado) setTimeout(() => cb(_snapshot('connected', true)), 0);
+      return () => _ouvintesConexao.delete(cb);
+    }
+    const o = { path: r.path, doc: _docDe(r.path), cb, errCb, ultimo: undefined, seq: 0 };
+    _ouvintes.add(o);
+    _recarregar(o);
+    return () => _ouvintes.delete(o);
+  }
+
+  // onDisconnect: o Supabase não apaga sozinho quando a conexão cai. Removemos ao
+  // fechar a página; se o app morrer sem avisar, o registro fica sem heartbeat e
+  // é ignorado (e o banco limpa presenças com mais de 10 minutos sem sinal).
+  const _removerAoSair = new Set();
+  function onDisconnect(r) {
+    return {
+      remove: async () => { _removerAoSair.add(r.path); },
+      cancel: async () => { _removerAoSair.delete(r.path); }
+    };
+  }
+  window.addEventListener('pagehide', () => {
+    _removerAoSair.forEach((p) => {
+      try {
+        fetch(SUPABASE_URL + '/rest/v1/rpc/kv_remove', {
+          method: 'POST', keepalive: true,
+          headers: { 'apikey': SUPABASE_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ p })
+        });
+      } catch (e) {}
+    });
+  });
 
   // ── Helpers de sincronização ──────────────────────────────────────────────
   // Expõe globalmente para o código legado usar
@@ -119,8 +202,6 @@
   };
 
   // ── Sistema de Presença ───────────────────────────────────────────────────
-  const { onDisconnect } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
-
   window._usuariosOnline = [];
   window._visitantesOnline = 0;
 
@@ -149,7 +230,7 @@
       console.log('✅ Presença registrada:', key);
       if (typeof _isAdmin !== 'undefined' && _isAdmin && typeof showToast === 'function' && !window._presencaToastMostrado) {
         window._presencaToastMostrado = true;
-        showToast('✅ Você está online (registrado no Firebase)');
+        showToast('✅ Você está online (registrado na nuvem)');
       }
       if (typeof window._atualizarBotaoOnline === 'function') window._atualizarBotaoOnline();
 
@@ -223,9 +304,7 @@
     } catch(e) {}
   };
 
-  // ── Firebase Cloud Messaging (notificações push) ─────────────────────────
-  const messaging = getMessaging(firebaseApp);
-
+  // ── Notificações push (Web Push com chave VAPID; enviadas pelo GitHub Actions) ──
   window._VAPID_KEY = 'BF74fgKZl-nFNcIii99vVu36kI4e0Xpfp8A4R1lJAhJwI00Wu-fuyGTm9Pit9CJiFPNup_6k70Qb-zuAYwqveEM';
 
   // Converte VAPID key base64url → Uint8Array (necessário para Web Push API)
@@ -284,21 +363,6 @@
     localStorage.setItem('fcm_token', key);
     console.log('✅ Subscription salva');
   };
-
-  // Mensagem em foreground (app aberto)
-  onMessage(messaging, function(payload) {
-    const notif = payload.notification || {};
-    if (notif.title && Notification.permission === 'granted') {
-      try {
-        new Notification(notif.title, {
-          body: notif.body || '',
-          icon: '/Mocidade-pq-macedo/icon-192x192.png',
-          tag: (payload.data && payload.data.tag) || 'evento',
-          requireInteraction: true
-        });
-      } catch(e) {}
-    }
-  });
 
   const PRESENCA_STALE_MS = 90000; // 90s sem heartbeat = considera "fantasma" e ignora
 
@@ -3391,7 +3455,7 @@ async function adminRefresh() {
     window._usersCache = JSON.parse(localStorage.getItem(DB_USERS_KEY) || '[]');
     renderAdminPendentes();
     renderAdminTodos();
-    showToast('⚠️ Firebase indisponível — mostrando dados locais.');
+    showToast('⚠️ Nuvem indisponível — mostrando dados locais.');
   } finally {
     if (icon) icon.style.animation = '';
     if (btn) btn.disabled = false;

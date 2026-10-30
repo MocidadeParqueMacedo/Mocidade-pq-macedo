@@ -7340,7 +7340,7 @@ const ARC_LIVROS = [
   {nome:'Neemias',caps:13,vers:[11,20,32,23,19,19,73,18,38,39,36,47,31]},
   {nome:'Ester',caps:10,vers:[22,23,15,17,14,14,10,17,32,3]},
   {nome:'Jó',caps:42,vers:[22,17,16,21,17,16,27,16,27,21,45,13,12,20,20,16,17,19,21,17,19,21,21,15,20,18,21,18,16,25,22,22,15,22,21,34,16,6,22,32,24,21]},
-  {nome:'Salmos',caps:150,vers:[6,12,8,8,12,10,17,9,20,18,7,8,6,7,5,11,15,50,14,9,13,31,6,10,22,12,14,9,11,12,24,11,22,22,28,12,40,22,13,17,13,11,5,20,28,22,35,45,48,43,13,31,7,10,10,9,8,18,19,2,29,176,7,8,9,4,8,5,6,5,6,8,8,3,18,3,3,21,26,9,8,24,13,10,7,12,15,21,10,20,14,9,6]},
+  {nome:'Salmos',caps:150,vers:[6,12,8,8,12,10,17,9,20,18,7,8,6,7,5,11,15,50,14,9,13,31,6,10,22,12,14,9,11,12,24,11,22,22,28,12,40,22,13,17,13,11,5,26,17,11,9,14,20,23,19,9,6,7,23,13,11,11,17,12,8,12,11,10,13,20,7,35,36,5,24,20,28,23,10,12,20,72,13,19,16,8,18,12,13,17,7,18,52,17,16,15,5,23,11,13,12,9,9,5,8,28,22,35,45,48,43,13,31,7,10,10,9,8,18,19,2,29,176,7,8,9,4,8,5,6,5,6,8,8,3,18,3,3,21,26,9,8,24,13,10,7,12,15,21,10,20,14,9,6]},
   {nome:'Provérbios',caps:31,vers:[33,22,35,27,23,35,27,36,18,32,31,28,25,35,33,33,28,24,29,30,31,29,35,34,28,28,27,28,62,33,44]},
   {nome:'Eclesiastes',caps:12,vers:[18,26,22,16,20,12,29,17,18,20,10,14]},
   {nome:'Cantares',caps:8,vers:[17,17,11,16,16,13,13,14]},
@@ -8223,6 +8223,98 @@ async function _carregarTesseract() {
   _tesseractCarregado = true;
 }
 
+// ── Leitura na nuvem (OCR.space, motor 3 — lê bem letra de mão) ──
+// A foto colorida vai pra função "ler-recitativo" do Supabase, que guarda a
+// chave do OCR.space e devolve o texto. Se não houver internet ou a leitura
+// falhar, o leitor local (Tesseract + modelo de dígitos) continua como reserva.
+function _imagemParaDataUrlReduzida(fonte) {
+  return new Promise(function(resolve, reject) {
+    function desenhar(el) {
+      var w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+      var escala = Math.min(1, 1800 / Math.max(w, h)); // limite do OCR.space: ~1 MB
+      var c = document.createElement('canvas');
+      c.width = Math.round(w * escala); c.height = Math.round(h * escala);
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(el, 0, 0, c.width, c.height);
+      var qualidade = 0.85, url = c.toDataURL('image/jpeg', qualidade);
+      while (url.length > 1300000 && qualidade > 0.4) { qualidade -= 0.15; url = c.toDataURL('image/jpeg', qualidade); }
+      resolve(url);
+    }
+    if (fonte instanceof HTMLCanvasElement || fonte instanceof HTMLImageElement) { desenhar(fonte); return; }
+    var img = new Image();
+    img.onload = function(){ desenhar(img); URL.revokeObjectURL(img.src); };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(fonte);
+  });
+}
+
+async function _lerRecitativoNaNuvem(fonte) {
+  if (!navigator.onLine || !window._supabase) throw new Error('sem conexão');
+  var imagem = await _imagemParaDataUrlReduzida(fonte);
+  // O OCR.space às vezes devolve texto vazio numa leitura isolada — tenta de novo uma vez.
+  for (var tentativa = 1; tentativa <= 2; tentativa++) {
+    var chamada = window._supabase.functions.invoke('ler-recitativo', { body: { imagem: imagem } });
+    var limite = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('tempo esgotado')); }, 40000); });
+    var r = await Promise.race([chamada, limite]);
+    if (r.error) throw r.error;
+    if (!r.data || typeof r.data.texto !== 'string') throw new Error((r.data && r.data.erro) || 'resposta inválida');
+    if (r.data.texto.trim() || tentativa === 2) return r.data.texto;
+  }
+}
+
+// Separa os campos do texto lido na nuvem. O motor 3 devolve o cartão linha a
+// linha, já com o valor ao lado do rótulo ("NOME: Elias", "CAPÍTULO: 71 VERSOS: 9 AO 9").
+// Nome, livro e auxiliar depois são casados com o cadastro/lista de livros
+// (corrige letras tortas, ex: "Salmoz" → Salmos, "Elios" → Elias).
+function _parseTextoNuvem(texto) {
+  var out = { nome: '', livro: '', capitulo: '', versoDe: '', versoAte: '', auxiliar: '', ordem: '', capReconstruido: false, versoReconstruido: false, capIncompleto: false, versoIncompleto: false };
+  window._leitorRecitTrechoBrutoCapitulo = null;
+  window._leitorRecitTrechoBrutoVerso = null;
+  var linhas = String(texto || '').replace(/\r/g, '').split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  var ROTULO = /^(NOME|LIVRO|CAP[IÍ]TULO|VERSOS?|AO|AP[OÓ]S|RECITATIVO|AUXILIAR)\b/i;
+  var limpar = function(v){ return (v || '').replace(/[_|]+/g, ' ').replace(/^[\s:.\-–—,;]+|[\s:.\-–—,;]+$/g, '').replace(/\s{2,}/g, ' '); };
+  // Valor do campo: o resto da linha do rótulo; se vier vazio (rótulo e valor
+  // em linhas separadas), usa a próxima linha que não seja outro rótulo.
+  function campo(re) {
+    for (var i = 0; i < linhas.length; i++) {
+      var m = linhas[i].match(re);
+      if (!m) continue;
+      var v = limpar(m[1]);
+      if (!v && linhas[i + 1] && !ROTULO.test(linhas[i + 1])) v = limpar(linhas[i + 1]);
+      return v;
+    }
+    return '';
+  }
+  out.nome = campo(/NOME\s*[:.]?\s*(.*)$/i);
+  out.livro = campo(/LIVRO\s*[:.]?\s*(.*)$/i);
+  out.auxiliar = campo(/AUXILIAR\s*[:.]?\s*(.*)$/i);
+
+  var livroIdx = _encontrarLivroPorNome(out.livro);
+  var livroInfo = livroIdx >= 0 ? ARC_LIVROS[livroIdx] : null;
+  var tudo = linhas.join('\n');
+  var mCap = tudo.match(/CAP[IÍ]TULO\s*[:.]?\s*(\d{1,3})/i);
+  if (mCap) {
+    var cap = parseInt(mCap[1], 10);
+    if (!livroInfo || (cap >= 1 && cap <= livroInfo.caps)) out.capitulo = String(cap);
+  }
+  var mVer = tudo.match(/VERSOS?\s*[:.]?\s*(\d{1,3})(?:\s*AO\s*(\d{1,3}))?/i);
+  if (mVer) {
+    var ver = parseInt(mVer[1], 10);
+    var maxVer = (livroInfo && out.capitulo) ? livroInfo.vers[parseInt(out.capitulo, 10) - 1] : null;
+    if (!maxVer || (ver >= 1 && ver <= maxVer)) out.versoDe = String(ver);
+    if (mVer[2]) out.versoAte = mVer[2];
+  }
+  // Número de ordem: escrito à mão ao lado de "CONGREGAÇÃO CRISTÃ NO BRASIL"
+  for (var i = 0; i < linhas.length; i++) {
+    if (!/CONGREGA/i.test(linhas[i])) continue;
+    var mo = linhas[i].match(/^(\d{1,2})\b/) || linhas[i].match(/\b(\d{1,2})$/);
+    if (mo) out.ordem = mo[1];
+    break;
+  }
+  return out;
+}
+
 // ── Reconhecedor especializado em DÍGITOS MANUSCRITOS (modelo "MNIST") ──
 // Diferente do Tesseract (feito pra ler qualquer letra/símbolo impresso),
 // esse é um modelo de rede neural treinado especificamente em milhares de
@@ -8759,6 +8851,7 @@ async function leitorRecitProcessarArquivo(inputEl) {
 }
 
 async function _leitorRecitTentarScanCompleto(file) {
+  _leitorRecitFonteColorida = null;
   document.getElementById('leitor-recit-passo-foto').style.display = 'none';
   document.getElementById('leitor-recit-passo-processando').style.display = 'block';
   document.getElementById('leitor-recit-status').textContent = 'Carregando o digitalizador...';
@@ -8776,6 +8869,7 @@ async function _leitorRecitTentarScanCompleto(file) {
       document.getElementById('leitor-recit-progresso').style.width = '75%';
       var canvasEndireitado = _aplicarTransformacaoPerspectiva(img, cantos);
       var canvasDigitalizado = _digitalizarParaPretoEBranco(canvasEndireitado);
+      _leitorRecitFonteColorida = canvasEndireitado;
 
       document.getElementById('leitor-recit-passo-processando').style.display = 'none';
       document.getElementById('leitor-recit-preview-wrap').style.display = 'block';
@@ -8897,9 +8991,9 @@ async function leitorLoteProcessarArquivos(inputEl) {
   document.getElementById('lote-passo-revisao').style.display = 'none';
   document.getElementById('lote-passo-processando').style.display = 'block';
 
+  // O leitor local (Tesseract) só é carregado se a leitura na nuvem falhar.
   try {
     await _carregarOpenCV();
-    await _carregarTesseract();
   } catch(e) {
     console.warn('Falha ao carregar bibliotecas do leitor:', e);
   }
@@ -8971,9 +9065,36 @@ async function _processarUmaFotoDoLote(file) {
     canvasFinal = cTemp;
   }
 
+  // 1ª opção: leitura na nuvem, com a foto colorida já endireitada
+  try {
+    var textoNuvem = await _lerRecitativoNaNuvem(canvasBase || img);
+    var exN = _parseTextoNuvem(textoNuvem);
+    if (exN.nome || exN.livro || exN.capitulo) {
+      diag.push('leitura na nuvem: OK');
+      var membroN = _encontrarMembroPorNomeOcr(exN.nome);
+      var auxN = _encontrarAuxiliarPorNomeOcr(exN.auxiliar);
+      return {
+        imagemDataUrl: canvasFinal.toDataURL('image/png'),
+        ordem: exN.ordem || '',
+        nome: membroN ? membroN.nome : (exN.nome || ''),
+        livroIdx: _encontrarLivroPorNome(exN.livro),
+        capitulo: exN.capitulo,
+        versoDe: exN.versoDe,
+        auxiliar: auxN ? auxN.nome : (exN.auxiliar || ''),
+        diagnostico: diag,
+        textoBruto: textoNuvem
+      };
+    }
+    diag.push('leitura na nuvem: não achou os campos — usando o leitor local');
+  } catch(eNuvem) {
+    diag.push('leitura na nuvem: indisponível (' + String(eNuvem && eNuvem.message || eNuvem).slice(0,80) + ') — usando o leitor local');
+  }
+
+  // Reserva: leitor local (funciona sem internet)
   var blob = await new Promise(function(res){ canvasFinal.toBlob(res, 'image/png'); });
   var texto = '', palavras = [];
   try {
+    await _carregarTesseract();
     var resultado = await Tesseract.recognize(blob, 'por', { tessedit_pageseg_mode: '6' });
     texto = (resultado && resultado.data && resultado.data.text) || '';
     palavras = (resultado && resultado.data && resultado.data.words) || [];
@@ -9459,6 +9580,7 @@ async function leitorRecitConfirmarRecorte(usarFotoInteira) {
   var ctx = outCanvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  _leitorRecitFonteColorida = outCanvas;
 
   // Digitaliza automaticamente: transforma a escrita (de qualquer cor —
   // preta, azul, rosa, vermelha) em preto puro, e o fundo em branco puro.
@@ -9584,6 +9706,7 @@ function _digitalizarParaPretoEBranco(canvasOrigem) {
 }
 
 let _leitorRecitBlobRecortado = null;
+let _leitorRecitFonteColorida = null; // cartão recortado em cores — é o que vai pra leitura na nuvem
 
 function leitorRecitConfirmarPreview() {
   document.getElementById('leitor-recit-preview-wrap').style.display = 'none';
@@ -9599,7 +9722,30 @@ async function _leitorRecitRodarOcr(blob) {
   document.getElementById('leitor-recit-passo-processando').style.display = 'block';
   document.getElementById('leitor-recit-status').textContent = 'Carregando leitor de imagem...';
   document.getElementById('leitor-recit-progresso').style.width = '0%';
+  window._leitorRecitViaNuvem = false;
+
+  // 1ª opção: leitura na nuvem (bem mais precisa em letra de mão)
   try {
+    document.getElementById('leitor-recit-status').textContent = 'Lendo o cartão...';
+    document.getElementById('leitor-recit-progresso').style.width = '40%';
+    var textoNuvem = await _lerRecitativoNaNuvem(_leitorRecitFonteColorida || blob);
+    var extraidoNuvem = _parseTextoNuvem(textoNuvem);
+    if (extraidoNuvem.nome || extraidoNuvem.livro || extraidoNuvem.capitulo) {
+      window._leitorRecitViaNuvem = true;
+      _leitorRecitTextoBruto = textoNuvem;
+      _leitorRecitPalavrasConfianca = [];
+      document.getElementById('leitor-recit-progresso').style.width = '100%';
+      _preencherRevisaoLeitor(extraidoNuvem, textoNuvem, !!extraidoNuvem.capitulo, !!extraidoNuvem.versoDe, false, false);
+      return;
+    }
+    console.warn('Leitura na nuvem não achou os campos — usando o leitor local.');
+  } catch(eNuvem) {
+    console.warn('Leitura na nuvem indisponível — usando o leitor local:', eNuvem);
+  }
+
+  // Reserva: leitor local (funciona sem internet)
+  try {
+    document.getElementById('leitor-recit-status').textContent = 'Carregando leitor de imagem...';
     await _carregarTesseract();
     document.getElementById('leitor-recit-status').textContent = 'Lendo o texto da imagem...';
     var resultado = await Tesseract.recognize(blob, 'por', {
@@ -9992,6 +10138,13 @@ function _confiancaMedia(valorTexto) {
 function _aplicarCorConfianca(inputId, valorTexto) {
   var el = document.getElementById(inputId);
   if (!el) return;
+  // Leitura na nuvem não informa confiança por palavra: o que não bateu com o
+  // cadastro (ou ficou vazio) aparece em laranja pra conferir.
+  if (window._leitorRecitViaNuvem) {
+    el.style.borderColor = '#d97706'; el.style.borderWidth = '2px';
+    el.title = valorTexto ? 'Lido na nuvem, mas não bateu com o cadastro — confira' : 'Não encontrado no cartão — preencha';
+    return;
+  }
   var conf = _confiancaMedia(valorTexto);
   if (conf === null) { el.style.borderColor = 'var(--border)'; el.title = ''; return; }
   if (conf < 55) { el.style.borderColor = '#dc2626'; el.style.borderWidth = '2px'; el.title = '⚠️ Confiança baixa (' + Math.round(conf) + '%) — confira com atenção'; }
@@ -10039,7 +10192,7 @@ function _preencherRevisaoLeitor(extraido, textoBruto, capFocado, versoFocado, c
   if (capFocado) {
     var elCap = document.getElementById('lr-capitulo');
     elCap.style.borderColor = '#16a34a'; elCap.style.borderWidth = '2px';
-    elCap.title = capViaModelo ? '✅ Lido pelo modelo especializado em dígitos manuscritos (mais confiável)' : '✅ Lido isoladamente, só com dígitos (mais confiável)';
+    elCap.title = window._leitorRecitViaNuvem ? '✅ Lido na nuvem e conferido com o total de capítulos do livro' : capViaModelo ? '✅ Lido pelo modelo especializado em dígitos manuscritos (mais confiável)' : '✅ Lido isoladamente, só com dígitos (mais confiável)';
   } else if (extraido.capIncompleto) {
     var elCapI = document.getElementById('lr-capitulo');
     elCapI.style.borderColor = '#dc2626'; elCapI.style.borderWidth = '2px';
@@ -10055,7 +10208,7 @@ function _preencherRevisaoLeitor(extraido, textoBruto, capFocado, versoFocado, c
   if (versoFocado) {
     var elVerso = document.getElementById('lr-verso-de');
     elVerso.style.borderColor = '#16a34a'; elVerso.style.borderWidth = '2px';
-    elVerso.title = versoViaModelo ? '✅ Lido pelo modelo especializado em dígitos manuscritos (mais confiável)' : '✅ Lido isoladamente, só com dígitos (mais confiável)';
+    elVerso.title = window._leitorRecitViaNuvem ? '✅ Lido na nuvem e conferido com o total de versos do capítulo' : versoViaModelo ? '✅ Lido pelo modelo especializado em dígitos manuscritos (mais confiável)' : '✅ Lido isoladamente, só com dígitos (mais confiável)';
   } else if (extraido.versoIncompleto) {
     var elVersoI = document.getElementById('lr-verso-de');
     elVersoI.style.borderColor = '#dc2626'; elVersoI.style.borderWidth = '2px';

@@ -13088,12 +13088,15 @@ function _glConversaPorVoz() {
 // Só solta o microfone enquanto o 🎤 do comando está em uso.
 function _glOuvidoDeveOuvir() {
   var root = document.getElementById('app-root');
-  return (_glVigiaLigado() || _glConversaPorVoz()) && _glVigiaSuportado() && !_glOuvido.falhou && document.visibilityState === 'visible' &&
+  return !_glOuvido.segurar && (_glVigiaLigado() || _glConversaPorVoz()) && _glVigiaSuportado() && !_glOuvido.falhou && document.visibilityState === 'visible' &&
     root && root.classList.contains('visible') &&
     !_glorinhaReconhecimento && !(_glorinhaGravador && _glorinhaGravador.state === 'recording');
 }
 // Reabre o ouvido logo que o 🎤 do comando termina (sem esperar o relógio de 1 s)
-function _glOuvidoReabrirJa() { setTimeout(function(){ if (_glOuvidoDeveOuvir() && !_glOuvido.stream) _glOuvidoAbrir(); }, 30); }
+function _glOuvidoReabrirJa() {
+  _glOuvido.segurar = false; // o comando terminou: destrava
+  setTimeout(function(){ if (_glOuvidoDeveOuvir() && !_glOuvido.stream) _glOuvidoAbrir(); }, 30);
+}
 function _glOuvidoAviso(txt) { var a = document.getElementById('glorinha-ouvir-aviso'); if (a) a.textContent = txt || ''; }
 
 function _glOuvidoCarregar(taxa) {
@@ -13119,7 +13122,8 @@ function _glOuvidoCarregar(taxa) {
 }
 
 async function _glOuvidoAbrir() {
-  if (_glOuvido.stream || _glOuvido.carregando) return;
+  if (_glOuvido.stream || _glOuvido.carregando || _glOuvido.abrindo) return;
+  _glOuvido.abrindo = true;
   try {
     var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
     if (!_glOuvidoDeveOuvir()) { stream.getTracks().forEach(function(t){ t.stop(); }); return; }
@@ -13142,6 +13146,8 @@ async function _glOuvidoAbrir() {
       _glOuvido.falhou = true;
       _glOuvidoAviso('Não consegui ligar a escuta neste aparelho 😕');
     }
+  } finally {
+    _glOuvido.abrindo = false;
   }
 }
 function _glOuvidoFechar() {
@@ -13167,13 +13173,18 @@ function _glChamou() {
     speechSynthesis.cancel();
     var parar = document.getElementById('glorinha-parar-voz'); if (parar) parar.style.display = 'none';
   }
-  _glOuvidoFechar(); // solta o microfone para o reconhecimento do comando
+  // Trava o ouvido local (não reabre sozinho) — o glorinhaMicrofone solta o
+  // microfone e espera o aparelho liberar antes de ouvir o comando
+  _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
   if (!document.getElementById('modal-glorinha').classList.contains('open')) abrirGlorinha();
   _glorinhaModoVoz = true;
-  setTimeout(function(){ if (!_glorinhaReconhecimento) glorinhaMicrofone(); }, 200);
+  setTimeout(function(){ if (!_glorinhaReconhecimento) glorinhaMicrofone(); }, 50);
 }
 // Mantém o ouvido aberto quando deve; solta o microfone enquanto o 🎤 do comando está em uso
 setInterval(function() {
+  // Segurança: se a trava ficou presa (o comando falhou antes de começar), solta
+  if (_glOuvido.segurar && !_glorinhaReconhecimento && !_glOuvido.preparando &&
+      !(_glorinhaGravador && _glorinhaGravador.state === 'recording') && Date.now() - (_glOuvido.segurarDesde || 0) > 12000) _glOuvido.segurar = false;
   if (_glOuvidoDeveOuvir()) { if (!_glOuvido.stream) _glOuvidoAbrir(); }
   else if (_glOuvido.stream) _glOuvidoFechar();
   // Aviso no chat: microfone ligado esperando "Glorinha"
@@ -13329,11 +13340,25 @@ function _glorinhaSetOuvindo(ligado, aviso) {
 function glorinhaMicrofone() {
   if (_glorinhaReconhecimento) { _glorinhaReconhecimento.stop(); return; }
   if (_glorinhaGravador && _glorinhaGravador.state === 'recording') { _glorinhaGravador.stop(); return; }
-  if (_glorinhaPensando) return;
+  if (_glorinhaPensando || _glOuvido.preparando) return;
   _glorinhaPararVoz();
-  _glOuvidoFechar(); // o ouvido local solta o microfone pro reconhecimento do comando (volta sozinho depois)
-  if (window.SpeechRecognition || window.webkitSpeechRecognition) _glorinhaOuvirNoAparelho();
-  else _glorinhaGravarAudio();
+  // O ouvido local ("Glorinha") solta o microfone e fica TRAVADO até o comando
+  // terminar — no Android, se os dois pegam o microfone juntos, o reconhecimento
+  // do comando fica surdo (liga, mas não transcreve nada).
+  var ouvidoEstavaAberto = !!_glOuvido.stream || !!_glOuvido.abrindo;
+  _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
+  _glOuvidoFechar();
+  var iniciar = function() {
+    _glOuvido.preparando = false;
+    if (window.SpeechRecognition || window.webkitSpeechRecognition) _glorinhaOuvirNoAparelho();
+    else _glorinhaGravarAudio();
+  };
+  if (ouvidoEstavaAberto) {
+    // dá tempo do aparelho liberar o microfone de verdade antes de começar
+    _glOuvido.preparando = true;
+    _glorinhaSetOuvindo(true, '⏳ Preparando o microfone…');
+    setTimeout(iniciar, 500);
+  } else iniciar();
 }
 
 // Escuta contínua: pausas curtas no meio da fala NÃO enviam. Só envia depois de
@@ -13376,7 +13401,7 @@ function _glorinhaOuvirNoAparelho() {
     if (erro === 'not-allowed') { showToast('🎤 Permita o uso do microfone para falar com a Glorinha'); return; }
     if (!falado && erro && erro !== 'no-speech' && erro !== 'aborted') { _glorinhaGravarAudio(); return; } // reconhecimento indisponível: grava
     if (falado) { _glorinhaFalarResposta = true; glorinhaEnviar(falado); }
-    else showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo');
+    else showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo' + (erro ? ' (código: ' + erro + ')' : ''));
   };
   try {
     rec.start();

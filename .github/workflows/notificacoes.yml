@@ -2,15 +2,9 @@ name: Notificacoes de Eventos
 
 on:
   workflow_dispatch:
-  schedule:
-    # A cada 15 min das 8h às 11h45 (Brasília). O GitHub atrasa e às vezes pula
-    # execuções agendadas; o script envia na primeira que rodar a partir das 8h
-    # e marca o dia como enviado, então as demais não repetem.
-    - cron: '*/15 11-14 * * *'
-
-concurrency:
-  group: notificacoes
-  cancel-in-progress: false
+  # Desativado: o envio diário agora é feito pelo Supabase (pg_cron às 8h em ponto +
+  # função supabase/functions/notificacoes). Este workflow ficou só para disparo manual
+  # de emergência pela aba Actions.
 
 jobs:
   notificar:

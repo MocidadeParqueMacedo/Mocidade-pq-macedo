@@ -12331,6 +12331,15 @@ function abrirGlorinha() {
 }
 function fecharGlorinha() {
   document.getElementById('modal-glorinha').classList.remove('open');
+  _glorinhaPararVoz();
+  if (_glorinhaReconhecimento) _glorinhaReconhecimento.abort();
+  if (_glorinhaGravador && _glorinhaGravador.state === 'recording') {
+    // Fechou no meio da gravação: descarta o áudio e desliga o microfone
+    var gr = _glorinhaGravador;
+    gr.onstop = function(){ clearTimeout(gr._limite); gr.stream.getTracks().forEach(function(t){ t.stop(); }); };
+    gr.stop();
+  }
+  _glorinhaSetOuvindo(false);
 }
 
 // Texto da resposta → HTML seguro (negrito com **, listas com "* " ou "- ")
@@ -12362,26 +12371,33 @@ function _glorinhaRender() {
   document.getElementById('glorinha-sugestoes').style.display = _glorinhaHist.length <= 1 ? 'flex' : 'none';
 }
 
-async function glorinhaEnviar(textoSugestao) {
+// audio (opcional): { dados: base64, mime } — pergunta gravada, transcrita pela Glorinha
+async function glorinhaEnviar(textoSugestao, audio) {
   var input = document.getElementById('glorinha-input');
   var texto = (textoSugestao || input.value || '').trim();
-  if (!texto || _glorinhaPensando) return;
+  if ((!texto && !audio) || _glorinhaPensando) return;
   input.value = '';
-  _glorinhaHist.push({ role: 'user', text: texto });
+  // A saudação inicial é só da tela; não vai pra IA
+  var mensagens = _glorinhaHist.slice(1).slice(-12);
+  var bolha = { role: 'user', text: audio ? '🎤 …' : texto };
+  if (!audio) mensagens = mensagens.concat([bolha]);
+  _glorinhaHist.push(bolha);
   _glorinhaPensando = true;
   _glorinhaRender();
   var respostaTexto;
   try {
     if (!navigator.onLine || !window._supabase) throw new Error('sem internet');
-    // A saudação inicial é só da tela; não vai pra IA
-    var mensagens = _glorinhaHist.slice(1).slice(-12);
-    var chamada = window._supabase.functions.invoke('glorinha', { body: { mensagens: mensagens, usuario: _userName || '' } });
-    var limite = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('tempo esgotado')); }, 60000); });
+    var corpo = { mensagens: mensagens, usuario: _userName || '' };
+    if (audio) corpo.audio = audio;
+    var chamada = window._supabase.functions.invoke('glorinha', { body: corpo });
+    var limite = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('tempo esgotado')); }, 90000); });
     var r = await Promise.race([chamada, limite]);
     if (r.error) throw r.error;
+    if (audio) bolha.text = (r.data && r.data.transcricao) ? '🎤 ' + r.data.transcricao : '🎤 (áudio)';
     respostaTexto = (r.data && (r.data.resposta || r.data.erro)) || 'Não consegui responder agora 😅';
   } catch(e) {
     console.warn('Glorinha:', e);
+    if (audio) bolha.text = '🎤 (áudio)';
     respostaTexto = navigator.onLine
       ? 'Ops, não consegui falar com você agora 😅 Tenta de novo daqui a pouquinho.'
       : 'Estou sem internet agora 📵 Quando a conexão voltar, me pergunta de novo!';
@@ -12389,6 +12405,144 @@ async function glorinhaEnviar(textoSugestao) {
   _glorinhaPensando = false;
   _glorinhaHist.push({ role: 'model', text: respostaTexto });
   _glorinhaRender();
+  if (_glorinhaFalarResposta) { _glorinhaFalarResposta = false; _glorinhaFalar(respostaTexto); }
+}
+
+// ── Voz: falar com a Glorinha e ouvir a resposta ──
+// 1º: o reconhecimento de fala do próprio aparelho (Android/Chrome, Safari) —
+//     instantâneo, e o texto vai aparecendo no campo enquanto a pessoa fala.
+// 2º (onde não existir ou falhar): grava o áudio, converte pra WAV e manda pra
+//     Glorinha transcrever. Quando a pergunta é por voz, a resposta é lida em voz alta.
+let _glorinhaFalarResposta = false;
+let _glorinhaReconhecimento = null;
+let _glorinhaGravador = null;
+
+function _glorinhaSetOuvindo(ligado, aviso) {
+  var mic = document.getElementById('glorinha-mic');
+  var st = document.getElementById('glorinha-status-voz');
+  mic.style.background = ligado ? 'var(--danger)' : 'var(--bg)';
+  mic.style.borderColor = ligado ? 'var(--danger)' : 'var(--border)';
+  mic.style.animation = ligado ? 'pulse-green 1.2s infinite' : '';
+  st.style.display = ligado ? 'block' : 'none';
+  st.textContent = aviso || '';
+}
+
+function glorinhaMicrofone() {
+  if (_glorinhaReconhecimento) { _glorinhaReconhecimento.stop(); return; }
+  if (_glorinhaGravador && _glorinhaGravador.state === 'recording') { _glorinhaGravador.stop(); return; }
+  if (_glorinhaPensando) return;
+  _glorinhaPararVoz();
+  if (window.SpeechRecognition || window.webkitSpeechRecognition) _glorinhaOuvirNoAparelho();
+  else _glorinhaGravarAudio();
+}
+
+function _glorinhaOuvirNoAparelho() {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var rec = new SR();
+  rec.lang = 'pt-BR';
+  rec.interimResults = true;
+  rec.continuous = false;
+  var input = document.getElementById('glorinha-input');
+  var falado = '', erro = null;
+  rec.onresult = function(e) {
+    falado = '';
+    for (var i = 0; i < e.results.length; i++) falado += e.results[i][0].transcript;
+    input.value = falado;
+  };
+  rec.onerror = function(e) { erro = e.error; };
+  rec.onend = function() {
+    _glorinhaReconhecimento = null;
+    _glorinhaSetOuvindo(false);
+    if (erro === 'not-allowed') { showToast('🎤 Permita o uso do microfone para falar com a Glorinha'); return; }
+    if (erro && erro !== 'no-speech' && erro !== 'aborted') { _glorinhaGravarAudio(); return; } // reconhecimento indisponível: grava
+    if (falado.trim()) { _glorinhaFalarResposta = true; glorinhaEnviar(falado); }
+    else showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo');
+  };
+  try {
+    rec.start();
+    _glorinhaReconhecimento = rec;
+    _glorinhaSetOuvindo(true, '🔴 Ouvindo… fale sua pergunta');
+  } catch(e) { _glorinhaGravarAudio(); }
+}
+
+async function _glorinhaGravarAudio() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    showToast('Este aparelho não permite falar com a Glorinha — escreva a pergunta 🙂');
+    return;
+  }
+  var stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch(e) { showToast('🎤 Permita o uso do microfone para falar com a Glorinha'); return; }
+  var partes = [];
+  var gr = new MediaRecorder(stream);
+  gr.ondataavailable = function(e) { if (e.data && e.data.size) partes.push(e.data); };
+  gr.onstop = async function() {
+    clearTimeout(gr._limite);
+    stream.getTracks().forEach(function(t){ t.stop(); });
+    _glorinhaSetOuvindo(false);
+    try {
+      var wav = await _audioParaWav(new Blob(partes, { type: gr.mimeType || 'audio/webm' }));
+      if (!wav) { showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo'); return; }
+      _glorinhaFalarResposta = true;
+      glorinhaEnviar(null, { dados: wav, mime: 'audio/wav' });
+    } catch(e) {
+      console.warn('Falha ao preparar o áudio:', e);
+      showToast('Não consegui preparar o áudio 😕 Tente escrever a pergunta.');
+    }
+  };
+  gr.start();
+  _glorinhaGravador = gr;
+  gr._limite = setTimeout(function(){ if (gr.state === 'recording') gr.stop(); }, 30000); // no máximo 30s
+  _glorinhaSetOuvindo(true, '🔴 Gravando… toque no 🎤 de novo para enviar');
+}
+
+// Converte a gravação (cada aparelho grava num formato) para WAV 16 kHz mono,
+// formato que a IA sempre aceita. Devolve base64, ou null se for curto demais.
+async function _audioParaWav(blob) {
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  var ctx = new Ctx();
+  var buf = await new Promise(function(res, rej) { blob.arrayBuffer().then(function(ab){ ctx.decodeAudioData(ab, res, rej); }, rej); });
+  ctx.close && ctx.close();
+  if (buf.duration < 0.4) return null;
+  var taxa = 16000;
+  var off = new OfflineAudioContext(1, Math.ceil(buf.duration * taxa), taxa);
+  var src = off.createBufferSource();
+  src.buffer = buf; src.connect(off.destination); src.start();
+  var pcm = (await off.startRendering()).getChannelData(0);
+  var dv = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  var esc = function(o, s){ for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  esc(0, 'RIFF'); dv.setUint32(4, 36 + pcm.length * 2, true); esc(8, 'WAVE'); esc(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, taxa, true); dv.setUint32(28, taxa * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  esc(36, 'data'); dv.setUint32(40, pcm.length * 2, true);
+  for (var i = 0; i < pcm.length; i++) { var s = Math.max(-1, Math.min(1, pcm[i])); dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  var bytes = new Uint8Array(dv.buffer), bin = '';
+  for (var k = 0; k < bytes.length; k += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(k, k + 0x8000));
+  return btoa(bin);
+}
+
+// Lê a resposta em voz alta com a voz em português do próprio aparelho
+function _glorinhaFalar(texto) {
+  if (!('speechSynthesis' in window)) return;
+  var limpo = String(texto || '')
+    .replace(/\*\*/g, '')
+    .replace(/^\s*[*-]\s+/gm, '')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '')
+    .replace(/\n+/g, '. ');
+  var fala = new SpeechSynthesisUtterance(limpo);
+  fala.lang = 'pt-BR';
+  var voz = speechSynthesis.getVoices().find(function(v){ return /pt[-_]BR/i.test(v.lang); });
+  if (voz) fala.voice = voz;
+  var parar = document.getElementById('glorinha-parar-voz');
+  fala.onstart = function(){ parar.style.display = 'inline-block'; };
+  fala.onend = fala.onerror = function(){ parar.style.display = 'none'; };
+  speechSynthesis.cancel();
+  speechSynthesis.speak(fala);
+}
+function _glorinhaPararVoz() {
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  var parar = document.getElementById('glorinha-parar-voz');
+  if (parar) parar.style.display = 'none';
 }
 
 document.addEventListener('click', function(e) {
@@ -12517,6 +12671,7 @@ window.addEventListener('orientationchange', posicionarBotaoInicio);
         <div class="modal-title" style="margin:0;">Glorinha</div>
         <div style="font-size:.72rem;color:var(--text-muted);">Assistente da Mocidade · só consulta, não altera nada</div>
       </div>
+      <button id="glorinha-parar-voz" onclick="_glorinhaPararVoz()" title="Parar a voz" style="display:none;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;padding:4px 8px;font-size:.75rem;cursor:pointer;color:var(--text);">🔇 Parar voz</button>
       <button onclick="fecharGlorinha()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted);">✕</button>
     </div>
     <div id="glorinha-msgs" style="flex:1;min-height:200px;max-height:55vh;overflow-y:auto;padding:4px 2px;"></div>
@@ -12526,8 +12681,10 @@ window.addEventListener('orientationchange', posicionarBotaoInicio);
       <button class="btn btn-sm btn-secondary" onclick="glorinhaEnviar('O que tem na agenda nos próximos 30 dias?')">Agenda</button>
       <button class="btn btn-sm btn-secondary" onclick="glorinhaEnviar('Como foi a última reunião?')">Última reunião</button>
     </div>
+    <div id="glorinha-status-voz" style="display:none;font-size:.76rem;color:var(--danger);font-weight:700;margin-bottom:6px;text-align:center;"></div>
     <div style="display:flex;gap:8px;">
-      <input type="text" id="glorinha-input" placeholder="Pergunte para a Glorinha..." onkeydown="if(event.key==='Enter')glorinhaEnviar()" style="flex:1;"/>
+      <button id="glorinha-mic" onclick="glorinhaMicrofone()" title="Falar com a Glorinha" style="flex-shrink:0;width:44px;border-radius:10px;border:1.5px solid var(--border);background:var(--bg);font-size:1.2rem;cursor:pointer;">🎤</button>
+      <input type="text" id="glorinha-input" placeholder="Pergunte ou toque no 🎤 e fale..." onkeydown="if(event.key==='Enter')glorinhaEnviar()" style="flex:1;"/>
       <button class="btn btn-primary" onclick="glorinhaEnviar()" style="flex-shrink:0;">Enviar</button>
     </div>
   </div>

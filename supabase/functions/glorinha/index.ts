@@ -140,18 +140,44 @@ const declaracoes = [
 
 // ── Conversa com o Gemini ──────────────────────────────────────────────────
 async function gemini(modelo: string, corpo: unknown) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
-    method: "POST", headers: { "x-goog-api-key": CHAVE, "Content-Type": "application/json" }, body: JSON.stringify(corpo),
-  });
-  return r.json();
+  // Modelo gratuito às vezes trava sem responder: desiste em 25s e tenta o próximo
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
+      method: "POST", headers: { "x-goog-api-key": CHAVE, "Content-Type": "application/json" }, body: JSON.stringify(corpo),
+      signal: AbortSignal.timeout(25000),
+    });
+    return await r.json();
+  } catch (e) {
+    return { error: { message: "sem resposta: " + String(e).slice(0, 80) } };
+  }
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.headers.get("origin") !== ORIGEM_PERMITIDA) return resposta({ erro: "origem não permitida" }, 403);
 
-  const { mensagens, usuario } = await req.json().catch(() => ({}));
-  if (!Array.isArray(mensagens) || !mensagens.length) return resposta({ erro: "sem mensagem" }, 400);
+  const { mensagens, usuario, audio } = await req.json().catch(() => ({}));
+  if (!Array.isArray(mensagens)) return resposta({ erro: "sem mensagem" }, 400);
+
+  // Pergunta por áudio (quando o aparelho não transcreve sozinho): o Gemini
+  // transcreve primeiro, e a transcrição vira a pergunta normal.
+  let transcricao = "";
+  if (audio && typeof audio.dados === "string" && typeof audio.mime === "string") {
+    if (audio.dados.length > 3_000_000) return resposta({ erro: "áudio longo demais" }, 413);
+    for (const modelo of MODELOS) {
+      const j = await gemini(modelo, { contents: [{ role: "user", parts: [
+        { inline_data: { mime_type: audio.mime, data: audio.dados } },
+        { text: "Transcreva exatamente o que foi falado neste áudio, em português do Brasil. Responda só com a transcrição, sem comentários. Se não houver fala, responda apenas: (silêncio)" },
+      ] }] });
+      if (j.error) continue;
+      transcricao = (j.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || "").join("").trim();
+      break;
+    }
+    if (!transcricao) return resposta({ resposta: "Não consegui ouvir direitinho agora 😅 Tenta falar de novo daqui a pouquinho, ou escreve pra mim.", ocupada: true });
+    if (/^\(?sil[eê]ncio\)?$/i.test(transcricao)) return resposta({ transcricao: "", resposta: "Não ouvi nada 🙉 Toca no microfone e fala mais pertinho, tá bom?" });
+    mensagens.push({ role: "user", text: transcricao });
+  }
+  if (!mensagens.length) return resposta({ erro: "sem mensagem" }, 400);
 
   const dados = await carregar();
   const hoje = new Date(dados.hoje + "T12:00:00Z");
@@ -167,19 +193,26 @@ Deno.serve(async (req) => {
 
   const contents: any[] = mensagens.slice(-12).map((m: any) => ({ role: m.role === "model" ? "model" : "user", parts: [{ text: String(m.text || "").slice(0, 2000) }] }));
   let iModelo = 0;
+  let cotaDiariaEsgotada = true; // vira false se algum modelo falhar por outro motivo
   for (let passo = 0; passo < 8; passo++) {
     const j = await gemini(MODELOS[iModelo], { systemInstruction: sistema, contents, tools: [{ functionDeclarations: declaracoes }] });
     if (j.error) {
+      if (!/PerDay|per day/i.test(JSON.stringify(j.error))) cotaDiariaEsgotada = false;
       // Lotado, sem cota ou indisponível: tenta o próximo modelo, no mesmo passo
       if (iModelo < MODELOS.length - 1) { iModelo++; passo--; continue; }
-      return resposta({ resposta: "Estou com muita gente falando comigo agora 😅 Tenta de novo daqui a 1 minutinho, tá bom?", ocupada: true });
+      return resposta({
+        resposta: cotaDiariaEsgotada
+          ? "Hoje eu já conversei bastante e chegou no meu limite do dia 😴 Amanhã eu volto, tá bom? Até lá, as informações estão nas telas do app."
+          : "Estou com muita gente falando comigo agora 😅 Tenta de novo daqui a 1 minutinho, tá bom?",
+        ocupada: true, transcricao,
+      });
     }
     const parts = j.candidates?.[0]?.content?.parts || [];
     contents.push({ role: "model", parts });
     const chamadas = parts.filter((p: any) => p.functionCall);
     if (!chamadas.length) {
       const texto = parts.map((p: any) => p.text || "").join("").trim();
-      return resposta({ resposta: texto || "Hmm, não consegui pensar numa resposta agora. Pode perguntar de outro jeito?", modelo: MODELOS[iModelo] });
+      return resposta({ resposta: texto || "Hmm, não consegui pensar numa resposta agora. Pode perguntar de outro jeito?", modelo: MODELOS[iModelo], transcricao });
     }
     contents.push({ role: "user", parts: chamadas.map((c: any) => {
       const f = ferramentas[c.functionCall.name];

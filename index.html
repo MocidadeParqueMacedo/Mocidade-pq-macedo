@@ -12449,6 +12449,217 @@ function _glResto(original, depoisDe) {
 }
 function _glLocal(original) { var m = String(original).match(/\s(?:na|no|em)\s+([^,.]+?)\s*$/i); return m ? m[1].trim() : ''; }
 
+// ════════ CONSULTAS DETALHADAS (bot local, sem IA) ════════
+// Busca qualquer informação por data, pessoa, continuação ou aba, direto nos
+// dados do app.
+
+// Data de uma CONSULTA: "domingo" numa pergunta no passado ("quem recitou
+// domingo") é o domingo que passou; no futuro ("quem vai recitar") é o próximo.
+function _glDataConsulta(t) {
+  var d = _glData(t);
+  if (!d) return null;
+  var passado = /\b(recitou|recitaram|veio|vieram|foi|foram|teve|houve|aconteceu|faltou|faltaram|estava|esteve|estavam|compareceu|tocou|fez|fizeram|visitamos|visitaram|passou|passada|passado|ultimo|ultima)\b/.test(t);
+  var futuro = /\b(vai|vao|vamos|tera|terao|proximo|proxima|que vem)\b/.test(t);
+  if (passado && !futuro && d > _glIso(_glHoje()) && _GL_DIAS.some(function(x){ return t.indexOf(x) >= 0; })) {
+    var dv = new Date(d + 'T12:00:00'); dv.setDate(dv.getDate() - 7); d = _glIso(dv);
+  }
+  return d;
+}
+// Continuação citada: "2ª cont", "segunda continuação", "2 continuação"
+function _glContConsulta(t) {
+  var m = t.match(/\b([1-5])\s?(?:a|ª|o)?\s?cont/); if (m) return m[1];
+  var ord = ['primeira','segunda','terceira','quarta','quinta'];
+  for (var i = 0; i < 5; i++) if (new RegExp('\\b' + ord[i] + ' cont').test(t)) return String(i + 1);
+  return null;
+}
+function _glReuniaoDoDia(data) { return (DB.meetings || []).find(function(r){ return r && String(r.date).slice(0,10) === data; }); }
+function _glIdade(m) {
+  var n = String(m.nascimento || ''), p = n.indexOf('-') >= 0 ? n.split('-') : n.split('/');
+  if (p.length < 3) return null;
+  var ano = n.indexOf('-') >= 0 ? +p[0] : +p[2], mes = +p[1], dia = n.indexOf('-') >= 0 ? +p[2] : +p[0], h = _glHoje();
+  var idade = h.getFullYear() - ano; if (h.getMonth() + 1 < mes || (h.getMonth() + 1 === mes && h.getDate() < dia)) idade--;
+  return { idade: idade, dia: dia, mes: mes };
+}
+function _glRecitativosDe(filtro) {
+  return (DB.versinhos || []).filter(function(v){ return v && v.data && (!filtro.data || v.data === filtro.data) && (!filtro.genero || v.genero === filtro.genero) && (!filtro.cont || String(v.cont) === String(filtro.cont)); })
+    .sort(function(a, b){ return String(a.data).localeCompare(String(b.data)) || String(a.genero).localeCompare(String(b.genero)) || +a.cont - +b.cont; });
+}
+function _glFmtRecitativo(v) {
+  var cab = (v.genero === 'F' ? 'Irmãs' : 'Irmãos') + ' ' + v.cont + 'ª Cont.' + (v.auxiliarNome ? ' (aux. ' + v.auxiliarNome + ')' : '');
+  var linhas = (v.ordem || []).map(function(o, i){ return '   ' + (i + 1) + '. ' + (o.membroNome || '?') + ' — ' + (o.ref || ''); });
+  return '* **' + cab + '**' + (linhas.length ? '\n' + linhas.join('\n') : ' — ainda sem nomes');
+}
+
+const _GL_CONSULTAS = [
+  // Recitativos de uma pessoa: "o que o Gabriel recitou", "quando a Melissa recitou"
+  { re: /\b(recitou|recitativos? d[oa]|versinhos? d[oa]|vai recitar|recita)\b/, nivel: 'todos', fazer: function(t) {
+      var ms = _glMembrosNoTexto(t);
+      if (!ms.length) return null; // sem pessoa: deixa pra consulta por data/continuação
+      return _glComMembro(t, function(m) {
+        var lista = [];
+        (DB.versinhos || []).forEach(function(v){ (v.ordem || []).forEach(function(o){ if (String(o.membroId) === String(m.id) || _glNorm(o.membroNome) === _glNorm(m.nome)) lista.push({ data: v.data, ref: o.ref, trecho: o.trecho, cont: v.cont, genero: v.genero }); }); });
+        lista.sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
+        if (!lista.length) return { texto: '📖 Não achei recitativos de **' + m.nome + '**.' };
+        return { texto: '📖 Recitativos de **' + _glRotulo(m) + '** (' + lista.length + '):\n' + lista.slice(0, 12).map(function(x){ return '* ' + _glFmt(x.data) + ' — ' + (x.ref || '?') + (x.trecho ? ' ("' + String(x.trecho).slice(0, 50) + '")' : ''); }).join('\n') };
+      });
+    } },
+  // Recitativos por data / irmãos-irmãs / continuação
+  { re: /\b(recit|versinho|quem recit|recitou|recitaram|vai recitar)/, nivel: 'todos', fazer: function(t) {
+      if (/\b(quantos|quantas)\b/.test(t)) return null; // contagem: vai pros números gerais
+      var data = _glDataConsulta(t), g = _glGenero(t), c = _glContConsulta(t);
+      var lista = _glRecitativosDe({ data: data, genero: g, cont: c });
+      if (!data) {
+        // sem data: a reunião mais recente que tenha recitativo com esses filtros
+        if (!lista.length) return { texto: 'Não achei recitativos' + (g ? (g === 'F' ? ' das irmãs' : ' dos irmãos') : '') + (c ? ' da ' + c + 'ª Cont.' : '') + ' 📖' };
+        var ultimaData = /\b(proximo|proxima|vai|que vem)\b/.test(t) ? lista.filter(function(v){ return v.data >= _glIso(_glHoje()); }).map(function(v){ return v.data; })[0] : null;
+        data = ultimaData || lista[lista.length - 1].data;
+        lista = lista.filter(function(v){ return v.data === data; });
+      }
+      var filtroTxt = (g ? (g === 'F' ? ' das irmãs' : ' dos irmãos') : '') + (c ? ' da ' + c + 'ª Continuação' : '');
+      if (!lista.length) {
+        var datas = _glRecitativosDe({ genero: g, cont: c }).map(function(v){ return v.data; }).filter(function(d, i, a){ return a.indexOf(d) === i; });
+        var perto = datas.sort(function(a, b){ return Math.abs(new Date(a) - new Date(data)) - Math.abs(new Date(b) - new Date(data)); }).slice(0, 3).sort();
+        return { texto: '📖 Não há recitativos' + filtroTxt + ' em **' + _glFmt(data) + '**.' + (perto.length ? '\nDatas mais próximas com recitativo: ' + perto.map(_glFmt).join(', ') + '.' : '') };
+      }
+      return { texto: '📖 Recitativos' + filtroTxt + ' de **' + _glFmt(data) + '**:\n' + lista.map(_glFmtRecitativo).join('\n') };
+    } },
+  // Presença de uma pessoa num dia: "o Filipe veio domingo?", "a Eliane faltou dia 12/10?"
+  { re: /\b(veio|foi|estava|esteve|compareceu|faltou|presente|ausente)\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glDataConsulta(t);
+      if (!data || !_glMembrosNoTexto(t).length) return null;
+      return _glComMembro(t, function(m) {
+        var r = _glReuniaoDoDia(data);
+        if (!r) return { texto: 'Não há reunião registrada em **' + _glFmt(data) + '**.' };
+        return { texto: _glPresente(r, m) ? '✅ Sim, **' + m.nome + '** esteve presente na reunião de ' + _glFmt(data) + '.' : '❌ Não, **' + m.nome + '** não esteve na reunião de ' + _glFmt(data) + '.' };
+      });
+    } },
+  // Quem faltou / quem veio num dia específico
+  { re: /\b(faltou|faltaram|faltas|ausentes|quem veio|quem foi|quem estava|presentes|quantos vieram|quantos foram)\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glDataConsulta(t);
+      if (!data) return null; // sem data: usa a consulta geral de faltas/última reunião
+      var r = _glReuniaoDoDia(data);
+      if (!r) return { texto: 'Não há reunião registrada em **' + _glFmt(data) + '**.' };
+      var ms = (DB.members || []).filter(Boolean);
+      var g = _glGenero(t), c = _glContConsulta(t);
+      if (g) ms = ms.filter(function(m){ return m.genero === g; });
+      if (c) ms = ms.filter(function(m){ return String(m.continuacao) === c; });
+      var faltas = /\b(faltou|faltaram|faltas|ausentes)\b/.test(t);
+      var lista = ms.filter(function(m){ return faltas ? !_glPresente(r, m) : _glPresente(r, m); });
+      var vis = ((DB.visitors || {})[String(r.id)] || []).length;
+      return { texto: (faltas ? '❌ Faltaram' : '✅ Estiveram presentes') + ' na reunião de **' + _glFmt(data) + '**' + (g ? (g === 'F' ? ' (irmãs)' : ' (irmãos)') : '') + (c ? ' da ' + c + 'ª Cont.' : '') + ': **' + lista.length + '**' + (!faltas && vis ? ' + ' + vis + ' visitante(s)' : '') + '\n' + lista.map(function(m){ return '* ' + _glRotulo(m); }).join('\n') };
+    } },
+  // Visitantes de uma reunião
+  { re: /\bvisitantes?\b/, nivel: 'logado', fazer: function(t) {
+      var data = _glDataConsulta(t) || ((_glReunioesRealizadas()[0] || {}).date);
+      var r = data && _glReuniaoDoDia(data);
+      if (!r) return { texto: 'Não achei a reunião' + (data ? ' de ' + _glFmt(data) : '') + '.' };
+      var vs = (DB.visitors || {})[String(r.id)] || [];
+      return { texto: '👋 Visitantes na reunião de **' + _glFmt(data) + '**: **' + vs.length + '**' + (vs.length ? '\n' + vs.map(function(v){ return '* ' + (v.nome || '?') + (v.comum ? ' (' + v.comum + ')' : ''); }).join('\n') : '') };
+    } },
+  // Tudo de um dia: "o que teve dia 12/10", "o que tem dia 15/11", "resumo do domingo"
+  { re: /\b(o que (tem|teve|houve|vai ter|acontece|aconteceu)|agenda d[oe] dia|programacao d[oe] dia|resumo d[oe]|como (foi|vai ser) o dia)\b/, nivel: 'todos', fazer: function(t) {
+      var data = _glDataConsulta(t);
+      if (!data) return null;
+      var out = [], logado = _glPode('logado');
+      var r = _glReuniaoDoDia(data);
+      if (r && logado) out.push('👥 **Reunião:** ' + (r.title || 'Reunião de Jovens') + ' — ' + (r.present || []).length + ' presente(s)');
+      var rec = _glRecitativosDe({ data: data });
+      if (rec.length) out.push('📖 **Recitativos:** ' + rec.map(function(v){ return (v.genero === 'F' ? 'Irmãs' : 'Irmãos') + ' ' + v.cont + 'ª (' + (v.ordem || []).length + ')'; }).join(', '));
+      _glEventosVisiveis().filter(function(e){ return e.data === data; }).forEach(function(e){ out.push('📅 **Evento:** ' + e.titulo + (e.horario ? ' às ' + e.horario : '') + (e.local ? ' — ' + e.local : '')); });
+      if (logado) (DB.visitas || []).filter(function(v){ return v && v.data === data; }).forEach(function(v){ out.push('🏠 **Visita:** casa de ' + v.nome + (v.horario ? ' às ' + v.horario : '')); });
+      (DB.members || []).filter(function(m){ var i = m && _glIdade(m); return i && i.dia === +data.slice(8,10) && i.mes === +data.slice(5,7); }).forEach(function(m){ out.push('🎂 **Aniversário:** ' + m.nome); });
+      if (logado) { var l = (DB.lancamentos || []).find(function(x){ return x && x.data === data; }); if (l) out.push('📝 **Lançamento:** total geral ' + (l.total_geral || '—')); }
+      if (logado) { var a = (DB.atas || []).find(function(x){ return x && x.data === data; }); if (a) out.push('📋 **Ata** registrada'); }
+      if (!out.length) return { texto: 'Não achei nada registrado em **' + _glFmt(data) + '** 📭' };
+      return { texto: '📆 **' + _glFmt(data) + '**\n' + out.map(function(x){ return '* ' + x; }).join('\n') };
+    } },
+  // Informações de uma pessoa: aniversário, idade, telefone, endereço, continuação, pais, ou tudo
+  { re: /\b(aniversario d[oa]|niver d[oa]|quando (e|faz) (o )?aniversario|quantos anos|idade d[oa]|telefone d[oa]|celular d[oa]|numero d[oa]|endereco d[oa]|onde mora|continuacao d[oa]|qual (a )?continuacao|pai d[oa]|mae d[oa]|pais d[oa]|me fala (sobre|d[oa])|informac\w* d[oa]|dados d[oa]|quem e (o|a)|sobre (o|a))\b/, nivel: 'logado', fazer: function(t) {
+      if (!_glMembrosNoTexto(t).length) return null;
+      return _glComMembro(t, function(m) {
+        var i = _glIdade(m), rot = '**' + m.nome + '**';
+        var aniv = i ? String(i.dia).padStart(2,'0') + '/' + String(i.mes).padStart(2,'0') : null;
+        if (/aniversario|niver/.test(t)) return { texto: aniv ? '🎂 O aniversário de ' + rot + ' é dia **' + aniv + '**' + (i ? ' (' + i.idade + ' anos hoje)' : '') + '.' : 'Não tenho a data de nascimento de ' + rot + '.' };
+        if (/quantos anos|idade/.test(t)) return { texto: i ? rot + ' tem **' + i.idade + ' anos**.' : 'Não tenho a data de nascimento de ' + rot + '.' };
+        if (/telefone|celular|numero/.test(t)) return { texto: m.tel ? '📞 Telefone de ' + rot + ': **' + m.tel + '**' : 'Não há telefone cadastrado para ' + rot + '.', botoes: m.tel ? [{ rotulo: '💬 Abrir WhatsApp', fn: _glAbrir(function(){ abrirWhatsAppMembro(m.id); }) }] : null };
+        if (/endereco|onde mora/.test(t)) return { texto: m.endereco ? '🏠 Endereço de ' + rot + ': **' + m.endereco + '**' : 'Não há endereço cadastrado para ' + rot + '.' };
+        if (/continuacao/.test(t)) return { texto: rot + ' é ' + (m.genero === 'F' ? 'irmã' : 'irmão') + ' da **' + contLabel(m) + '**' + (m.auxiliar ? ' e é auxiliar' : '') + '.' };
+        if (/\b(pai|mae|pais)\b/.test(t)) return { texto: '👨‍👩‍👧 Pais de ' + rot + ':\n* Pai: ' + (m.paiNome || m.pai_nome || (m.pai && (m.pai.nome || m.pai)) || '—') + '\n* Mãe: ' + (m.maeNome || m.mae_nome || (m.mae && (m.mae.nome || m.mae)) || '—') };
+        // Ficha completa
+        var rs = _glReunioesRealizadas(), pres = rs.filter(function(r){ return _glPresente(r, m); });
+        var recs = []; (DB.versinhos || []).forEach(function(v){ (v.ordem || []).forEach(function(o){ if (String(o.membroId) === String(m.id)) recs.push(_glFmt(v.data) + ' ' + (o.ref || '')); }); });
+        return { texto: '👤 ' + rot + '\n* ' + (m.genero === 'F' ? 'Irmã' : 'Irmão') + ' — ' + contLabel(m) + (m.auxiliar ? ' — ⭐ Auxiliar' : '') +
+            (aniv ? '\n* 🎂 Aniversário: ' + aniv + (i ? ' (' + i.idade + ' anos)' : '') : '') +
+            (m.tel ? '\n* 📞 ' + m.tel : '') + (m.endereco ? '\n* 🏠 ' + m.endereco : '') +
+            '\n* ✅ Presença: ' + pres.length + ' de ' + rs.length + ' reuniões' + (pres[0] ? ' (última em ' + _glFmt(pres[0].date) + ')' : '') +
+            (recs.length ? '\n* 📖 Recitativos: ' + recs.length + ' (último: ' + recs[recs.length - 1] + ')' : ''),
+          botoes: [{ rotulo: '📊 Relatório completo', fn: _glAbrir(function(){ showSection('membros'); abrirRelatorioMembro(m.id); }) }] };
+      });
+    } },
+  // Visitas: por mês, passadas, ou de uma casa
+  { re: /\bvisitas?\b/, nivel: 'logado', fazer: function(t) {
+      if (/\b(cria|criar|marca|marcar|agenda|agendar|adiciona|cadastra|nova|edita|editar|apaga|apagar|exclui|excluir|remarca)\b/.test(t)) return null; // ações
+      var mes = _glMes(t), data = _glDataConsulta(t), hoje = _glIso(_glHoje());
+      var passadas = /\b(ultima|ultimas|feitas|realizadas|passadas|foi|foram|teve|fizemos)\b/.test(t);
+      var vs = (DB.visitas || []).filter(function(v){ return v && v.data; });
+      var casa = vs.filter(function(v){ var n = _glNorm(v.nome).split(' ')[0]; return n.length >= 3 && new RegExp('\\b' + n + '\\b').test(t); });
+      var pediuCasa = t.match(/\bcasa d[aoe]s?\s+(?:irma |irmao )?([a-z]+)/);
+      if (pediuCasa && !casa.length) return { texto: 'Não achei visitas com data na casa de **' + pediuCasa[1].charAt(0).toUpperCase() + pediuCasa[1].slice(1) + '** 🏠' };
+      if (casa.length) vs = casa;
+      if (data) vs = vs.filter(function(v){ return v.data === data; });
+      else if (mes) vs = vs.filter(function(v){ return +v.data.slice(5,7) === mes; });
+      else if (passadas) vs = vs.filter(function(v){ return v.data <= hoje; });
+      else if (!casa.length) return null; // "visitas" puro: agenda (próximas)
+      vs.sort(function(a, b){ return (passadas || casa.length ? b.data.localeCompare(a.data) : a.data.localeCompare(b.data)); });
+      if (!vs.length) return { texto: 'Não achei visitas com esse filtro 🏠' };
+      if (/\bultima\b/.test(t)) vs = vs.filter(function(v){ return v.data <= hoje; }).slice(0, 1);
+      return { texto: '🏠 **Visitas' + (casa.length ? ' — casa de ' + casa[0].nome : '') + (mes ? ' em ' + _GL_MESES[mes-1].replace('marco','março') : '') + '** (' + vs.length + '):\n' + vs.slice(0, 15).map(function(v){ return '* ' + _glFmt(v.data) + (v.horario ? ' às ' + v.horario : '') + ' — ' + v.nome + (v.data < hoje ? ' (realizada)' : ''); }).join('\n') };
+    } },
+  // Eventos passados ou de um mês específico: "eventos de maio", "que eventos teve"
+  { re: /\beventos?\b/, nivel: 'todos', fazer: function(t) {
+      if (/\b(cria|criar|marca|marcar|agendar|adiciona|cadastra|novo|nova|edita|editar|apaga|apagar|exclui|excluir|cancela)\b/.test(t)) return null;
+      var mes = _glMes(t), passados = /\b(teve|tivemos|passados|ja foram|aconteceram|ultimo|ultimos|anteriores)\b/.test(t), hoje = _glIso(_glHoje());
+      if (!mes && !passados) return null; // "eventos" puro: agenda (próximos)
+      var evs = _glEventosVisiveis().filter(function(e){ return mes ? +e.data.slice(5,7) === mes : e.data < hoje; }).sort(function(a, b){ return (passados ? b.data.localeCompare(a.data) : a.data.localeCompare(b.data)); });
+      if (!evs.length) return { texto: 'Não achei eventos' + (mes ? ' em ' + _GL_MESES[mes-1].replace('marco','março') : ' passados') + ' 📅' };
+      return { texto: '📅 **Eventos' + (mes ? ' em ' + _GL_MESES[mes-1].replace('marco','março') : ' que já aconteceram') + '** (' + evs.length + '):\n' + evs.slice(0, 15).map(function(e){ return '* ' + _glFmt(e.data) + (e.horario ? ' às ' + e.horario : '') + ' — ' + e.titulo + (e.local ? ' (' + e.local + ')' : '') + (e.privado ? ' 🔒' : ''); }).join('\n') };
+    } },
+  // Um número do lançamento: "quantos músicos no domingo 26/10"
+  { re: /\b(quantos|quantas|numero de|total de)\b.*\b(musicos|casados|meninos|mocos|meninas|mocas|individuais|recitativos|total geral)\b/, nivel: 'logado', fazer: function(t) {
+      var campos = { musicos: 'musicos', casados: 'casados', meninos: 'meninos', mocos: 'mocos', meninas: 'meninas', mocas: 'mocas', individuais: 'individuais', recitativos: 'total_recit', 'total geral': 'total_geral' };
+      var chave = Object.keys(campos).find(function(k){ return t.indexOf(k) >= 0; });
+      if (chave === 'recitativos' && !/lancamento/.test(t)) return null; // "quantos recitativos": contagem geral, não o campo do lançamento
+      var data = _glDataConsulta(t);
+      var ls = (DB.lancamentos || []).filter(Boolean).sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
+      var l = data ? ls.find(function(x){ return x.data === data; }) : ls[0];
+      if (!l) return chave === 'recitativos' ? null : { texto: 'Não achei lançamento' + (data ? ' em ' + _glFmt(data) : '') + '.' };
+      return { texto: '📝 No lançamento de **' + _glFmt(l.data) + '**: ' + chave + ' = **' + (l[campos[chave]] || 0) + '**' };
+    } },
+  // Atas: de um dia, ou que falam de um assunto
+  { re: /\batas?\b/, nivel: 'logado', fazer: function(t, original) {
+      if (/\b(nova|cria|criar|escreve|escrever|registra|registrar|lanca|lancar|faz|fazer|adiciona)\b/.test(t)) return null;
+      var as = (DB.atas || []).filter(Boolean).sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
+      var texto = function(a){ return a.assunto && a.assunto.tipo === 'texto' ? String(a.assunto.conteudo || '') : (a.assunto && a.assunto.nome ? '(documento: ' + a.assunto.nome + ')' : '(foto)'); };
+      var data = _glDataConsulta(t), m = String(original).match(/\b(?:fala|falam|sobre|assunto|com a palavra)\s+(?:de |do |da |sobre )?(.+)$/i);
+      if (data) as = as.filter(function(a){ return a.data === data; });
+      else if (m) { var busca = _glNorm(m[1]); as = as.filter(function(a){ return _glNorm(texto(a)).indexOf(busca) >= 0; }); }
+      if (!as.length) return { texto: 'Não achei ata' + (data ? ' em ' + _glFmt(data) : m ? ' sobre "' + m[1] + '"' : '') + ' 📋' };
+      return { texto: '📋 **Atas** (' + as.length + '):\n' + as.slice(0, 5).map(function(a){ return '* **' + _glFmt(a.data) + '** — ' + texto(a).slice(0, 220); }).join('\n'), botoes: [{ rotulo: '📋 Abrir Atas', fn: _glAbrir(function(){ showSection('atas'); }) }] };
+    } },
+  // Números gerais
+  { re: /\b(quantas reunioes|numero de reunioes|media de presenca|frequencia media|presenca media|quantos recitativos)\b/, nivel: 'logado', fazer: function(t) {
+      var rs = _glReunioesRealizadas(), mes = _glMes(t);
+      if (/recitativos/.test(t)) {
+        var vs = _glRecitativosDe({}).filter(function(v){ return !mes || +v.data.slice(5,7) === mes; });
+        var n = vs.reduce(function(s, v){ return s + (v.ordem || []).length; }, 0);
+        return { texto: '📖 **' + n + '** recitativos' + (mes ? ' em ' + _GL_MESES[mes-1].replace('marco','março') : '') + ', em ' + vs.map(function(v){ return v.data; }).filter(function(d, i, a){ return a.indexOf(d) === i; }).length + ' reunião(ões).' };
+      }
+      if (mes) rs = rs.filter(function(r){ return +String(r.date).slice(5,7) === mes; });
+      var media = rs.length ? Math.round(rs.reduce(function(s, r){ return s + (r.present || []).length; }, 0) / rs.length) : 0;
+      return { texto: '📊 **' + rs.length + '** reuniões realizadas' + (mes ? ' em ' + _GL_MESES[mes-1].replace('marco','março') : '') + ', média de **' + media + '** presentes por reunião.' };
+    } },
+];
+
 // ── Intenções (a primeira que bater responde) ──
 const _GL_INTENCOES = [
   // Modo comando (formulário guiado): "comando marcar evento", "comando nova visita"...
@@ -12604,11 +12815,11 @@ const _GL_INTENCOES = [
   // ── Membro: relatório / WhatsApp ──
   { re: /\b(relatorio|ficha)\b/, nivel: 'logado', fazer: function(t) {
       return _glComMembro(t, function(m) { return { texto: 'Abri o relatório de **' + m.nome + '** 📊', depois: _glAbrir(function(){ showSection('membros'); abrirRelatorioMembro(m.id); }) }; }, 'De quem é o relatório? Ex: **relatório do Gabriel**.'); } },
-  { re: /\b(whats|whatsapp|zap|manda mensagem|mandar mensagem|liga|ligar|telefone d)\b/, nivel: 'logado', fazer: function(t) {
+  { re: /\b(whats|whatsapp|zap|manda mensagem|mandar mensagem|liga pr[oa]|ligar pr[oa])\b/, nivel: 'logado', fazer: function(t) {
       return _glComMembro(t, function(m) { return { texto: 'Abrindo o WhatsApp de **' + m.nome + '** 💬', depois: _glAbrir(function(){ abrirWhatsAppMembro(m.id); }) }; }); } },
 
   // ── Consultas ──
-  { re: /\b(online|conectad)/, nivel: 'logado', fazer: function() {
+  { nome: 'online', re: /\b(online|conectad)/, nivel: 'logado', fazer: function() {
       var us = window._usuariosOnline || [], vis = window._visitantesOnline || 0;
       return { texto: '🟢 **' + us.length + '** pessoa(s) conectada(s)' + (us.length ? ': ' + us.map(function(u){ return u.nome; }).join(', ') : '') + (vis ? '\n👀 E ' + vis + ' visitante(s) sem login.' : '') }; } },
   { re: /\b(faltou|faltaram|faltas|faltosos|ausentes?|nao (veio|vieram)|quem nao foi)\b/, nivel: 'logado', fazer: function(t) {
@@ -12994,6 +13205,15 @@ function _glorinhaLocal(original) {
   original = String(original).replace(/^\s*(ei |oi |olá |ola |e aí |e ai )?glorinha\b[\s,!.]*/i, '');
   for (var i = 0; i < _GL_INTENCOES.length; i++) {
     var it = _GL_INTENCOES[i];
+    // Antes das consultas genéricas antigas, tenta as consultas detalhadas
+    if (it.nome === 'online') {
+      for (var j = 0; j < _GL_CONSULTAS.length; j++) {
+        var cq = _GL_CONSULTAS[j];
+        if (!cq.re.test(t) || !_glPode(cq.nivel)) continue; // sem acesso: só não usa esta consulta
+        var rq = cq.fazer(t, original);
+        if (rq) return rq;
+      }
+    }
     if (!it.re.test(t)) continue;
     if (!_glPode(it.nivel)) return _glNegado(it.nivel);
     var r = it.fazer(t, original);
@@ -13366,46 +13586,72 @@ function glorinhaMicrofone() {
 // em GLORINHA_ESPERA_MS, desiste.
 const GLORINHA_PAUSA_MS = 2000;
 const GLORINHA_ESPERA_MS = 8000;
+// No Android, o reconhecimento do Google se encerra sozinho na primeira pausa
+// curta (ignora o "contínuo"). Por isso cada "sessão" que termina ANTES dos 2 s
+// de silêncio é religada na hora, juntando o texto — só envia de verdade depois
+// de 2 s sem fala nenhuma (ou ao tocar no 🎤).
 function _glorinhaOuvirNoAparelho() {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var rec = new SR();
-  rec.lang = 'pt-BR';
-  rec.interimResults = true;
-  rec.continuous = true;
   var input = document.getElementById('glorinha-input');
-  var finais = [], parcial = '', erro = null, cronometro = null;
-  var textoAtual = function(){ return (finais.join(' ') + ' ' + parcial).replace(/\s+/g, ' ').trim(); };
-  var encerrarEm = function(ms){ clearTimeout(cronometro); cronometro = setTimeout(function(){ try { rec.stop(); } catch(e) {} }, ms); };
-  rec.onresult = function(e) {
-    parcial = '';
-    for (var i = e.resultIndex; i < e.results.length; i++) {
-      var trecho = String(e.results[i][0].transcript || '').trim();
-      if (!trecho) continue;
-      if (!e.results[i].isFinal) { parcial = trecho; continue; }
-      // Alguns Androids repetem o texto acumulado a cada pedaço: se o novo começa
-      // com o anterior, é a mesma frase crescendo — substitui em vez de repetir.
-      var ultimo = finais[finais.length - 1];
-      if (ultimo && _glNorm(trecho).indexOf(_glNorm(ultimo)) === 0) finais[finais.length - 1] = trecho;
-      else if (!ultimo || _glNorm(ultimo).indexOf(_glNorm(trecho)) !== 0) finais.push(trecho);
-    }
-    input.value = textoAtual();
-    encerrarEm(GLORINHA_PAUSA_MS); // ainda falando: recomeça a contagem do silêncio
+  var finais = [], parcial = '', erro = null, cronometro = null, rec = null;
+  var terminar = false, cancelado = false, inicio = Date.now(), ultimaFala = 0;
+  var ctl = { // é este controle que fica em _glorinhaReconhecimento
+    stop: function(){ terminar = true; try { rec && rec.stop(); } catch(e) {} },
+    abort: function(){ terminar = true; cancelado = true; try { rec && rec.abort(); } catch(e) {} }
   };
-  rec.onerror = function(e) { erro = e.error; };
-  rec.onend = function() {
+  var textoAtual = function(){ return (finais.join(' ') + ' ' + parcial).replace(/\s+/g, ' ').trim(); };
+  var juntar = function(trecho) {
+    // Alguns Androids repetem o texto acumulado a cada pedaço: se o novo começa
+    // com o anterior, é a mesma frase crescendo — substitui em vez de repetir.
+    var ultimo = finais[finais.length - 1];
+    if (ultimo && _glNorm(trecho).indexOf(_glNorm(ultimo)) === 0) finais[finais.length - 1] = trecho;
+    else if (!ultimo || _glNorm(ultimo).indexOf(_glNorm(trecho)) !== 0) finais.push(trecho);
+  };
+  var encerrarEm = function(ms){ clearTimeout(cronometro); cronometro = setTimeout(function(){ ctl.stop(); }, ms); };
+  var finalizar = function() {
     clearTimeout(cronometro);
-    _glorinhaReconhecimento = null;
+    if (_glorinhaReconhecimento === ctl) _glorinhaReconhecimento = null;
     _glorinhaSetOuvindo(false);
     _glOuvidoReabrirJa(); // o ouvido do "Glorinha" volta na hora, pra pegar uma interrupção desde o início da resposta
+    if (cancelado) return; // fechou o chat: descarta
     var falado = textoAtual();
     if (erro === 'not-allowed') { showToast('🎤 Permita o uso do microfone para falar com a Glorinha'); return; }
     if (!falado && erro && erro !== 'no-speech' && erro !== 'aborted') { _glorinhaGravarAudio(); return; } // reconhecimento indisponível: grava
     if (falado) { _glorinhaFalarResposta = true; glorinhaEnviar(falado); }
     else showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo' + (erro ? ' (código: ' + erro + ')' : ''));
   };
-  try {
+  var sessao = function() {
+    rec = new SR();
+    rec.lang = 'pt-BR';
+    rec.interimResults = true;
+    rec.continuous = true;
+    rec.onresult = function(e) {
+      parcial = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var trecho = String(e.results[i][0].transcript || '').trim();
+        if (!trecho) continue;
+        if (e.results[i].isFinal) juntar(trecho); else parcial = trecho;
+      }
+      ultimaFala = Date.now();
+      input.value = textoAtual();
+      encerrarEm(GLORINHA_PAUSA_MS); // ainda falando: recomeça a contagem do silêncio
+    };
+    rec.onerror = function(e) { erro = e.error; };
+    rec.onend = function() {
+      if (parcial) { juntar(parcial); parcial = ''; } // encerrou no meio de uma frase: guarda o que já ouviu
+      var grave = erro && erro !== 'no-speech' && erro !== 'aborted';
+      var noPrazo = ultimaFala ? (Date.now() - ultimaFala < GLORINHA_PAUSA_MS) : (Date.now() - inicio < GLORINHA_ESPERA_MS);
+      if (!terminar && !grave && noPrazo) {
+        erro = null;
+        try { sessao(); return; } catch(x) {} // religa e continua ouvindo
+      }
+      finalizar();
+    };
     rec.start();
-    _glorinhaReconhecimento = rec;
+  };
+  try {
+    sessao();
+    _glorinhaReconhecimento = ctl;
     encerrarEm(GLORINHA_ESPERA_MS);
     _glorinhaSetOuvindo(true, '🔴 Ouvindo… pode fazer pausas. Envio depois de 2s em silêncio (ou toque no 🎤)');
   } catch(e) { _glorinhaGravarAudio(); }

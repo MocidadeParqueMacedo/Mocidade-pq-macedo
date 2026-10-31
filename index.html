@@ -12379,16 +12379,21 @@ function _glData(t) {
   }
   return null;
 }
+// Horário: "19h", "19:30", "19 horas", "às 21", "8 da noite", "meio dia"
 function _glHora(t) {
-  var m = t.match(/\b(?:as |a )?(\d{1,2})(?::(\d{2})|h(\d{2})?|\s?horas?)\b/);
+  if (/\bmeio dia\b/.test(t)) return '12:00';
+  if (/\bmeia noite\b/.test(t)) return '00:00';
+  var m = t.match(/\b(\d{1,2})(?::(\d{2})|h(\d{2})?|\s?horas?)(?!\/)\b/) ||
+          t.match(/\b(?:as|a) (\d{1,2})\b(?!\s*[\/:]|\s*de\s+(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro))/) ||
+          t.match(/\b(\d{1,2}) (?:da|de) (?:manha|tarde|noite)\b/);
   if (!m) return null;
   var h = +m[1], min = m[2] || m[3] || '00';
-  if (/\b(da noite|da tarde)\b/.test(t) && h < 12) h += 12;
+  if (/\b(da noite|da tarde|de noite|de tarde)\b/.test(t) && h < 12) h += 12;
   return h <= 23 ? String(h).padStart(2,'0') + ':' + min : null;
 }
 function _glMes(t) {
   for (var i = 0; i < 12; i++) if (new RegExp('\\b' + _GL_MESES[i] + '\\b').test(t)) return i + 1;
-  if (/\b(este|esse|deste|desse|neste|nesse) mes\b/.test(t)) return new Date().getMonth() + 1;
+  if (/\b(este|esse|deste|desse|neste|nesse|do|no) mes\b/.test(t)) return new Date().getMonth() + 1;
   if (/\bmes que vem\b|\bproximo mes\b/.test(t)) return (new Date().getMonth() + 1) % 12 + 1;
   return null;
 }
@@ -12444,8 +12449,11 @@ function _glResto(original, depoisDe) {
   }
   return s.replace(/\b(dia|para o dia|no dia)\s+\d{1,2}(\/\d{1,2}(\/\d{2,4})?)?(\s+de\s+\w+)?/gi, ' ')
     .replace(/\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/g, ' ')
-    .replace(/\b(às|as|a)\s+\d{1,2}(:\d{2}|h\d{0,2})?\b/gi, ' ').replace(/\b\d{1,2}(:\d{2}|h\d{0,2})\b/gi, ' ')
-    .replace(/\b(hoje|amanhã|amanha|depois de amanhã|domingo|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado)(-feira)?\b/gi, ' ')
+    .replace(/(^|\s)(às|as|a)\s+\d{1,2}(:\d{2}|h\d{0,2})?\b/gi, ' ').replace(/\b\d{1,2}(:\d{2}|h\d{0,2}|\s?horas?)\b/gi, ' ')
+    .replace(/\b(da|de)\s+(manhã|manha|tarde|noite)\b/gi, ' ').replace(/\b(meio dia|meia noite)\b/gi, ' ')
+    // (sem \b no fim: o \b do JavaScript não reconhece "ã"/"á" como fim de palavra)
+    .replace(/(^|\s)(depois de amanhã|depois de amanha|hoje|amanhã|amanha|domingo|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado)(-feira)?(?=\s|$|[,.!?:;])/gi, ' ')
+    .replace(/(^|\s)(que vem|próximo|proximo|próxima|proxima)(?=\s|$|[,.!?:;])/gi, ' ')
     .replace(/\b(privado|privada)\b/gi, ' ')
     .replace(/\s+(na|no|em)\s+[^,]+$/i, ' ')
     .replace(/^[\s,:;.\-–—]+|[\s,:;.\-–—]+$/g, '').replace(/\s{2,}/g, ' ');
@@ -12457,8 +12465,22 @@ function _glLocal(original) { var m = String(original).match(/\s(?:na|no|em)\s+(
 // Antes de interpretar, corrige as trocas conhecidas e converte números falados
 // em algarismos SÓ onde são data/hora/continuação (pra não estragar títulos).
 const _GL_TROCAS = [
+  // "recitou" e família — as trocas mais comuns do reconhecimento de voz
   [/\bressuscit(ou|aram|ar|a|ando|ativo|ativos)\b/gi, function(m, s){ return 'recit' + s; }],
-  [/\bressuscitou\b/gi, 'recitou'],
+  [/\b(receitou|rescitou|resitou|recitô|re citou|resistiu|recitol|recitoo)\b/gi, 'recitou'],
+  [/\b(receitaram|rescitaram|resitaram|resistiram)\b/gi, 'recitaram'],
+  [/\b(receitar|rescitar|resitar)\b/gi, 'recitar'],
+  [/\b(receitativo|resitativo|rescitativo|recitativa|ressuscitativo)(s?)\b/gi, function(m, a, s){ return 'recitativo' + s; }],
+  [/\brecitaç(ão|ões)\b/gi, function(m, s){ return s === 'ão' ? 'recitativo' : 'recitativos'; }],
+  [/\b(declamou|declamaram)\b/gi, function(m){ return /ram$/i.test(m) ? 'recitaram' : 'recitou'; }],
+  [/\b(leu|falou|disse|fez|recitou) (o |os )?(versinho|versículo|verso)s?\b/gi, 'recitou'],
+  // jeitos diferentes de dizer as mesmas coisas
+  [/\bnão (veio|compareceu|foi|esteve)\b/gi, 'faltou'], [/\bnão (vieram|compareceram|foram)\b/gi, 'faltaram'],
+  [/\b(compareceu|apareceu)\b/gi, 'veio'], [/\b(compareceram|apareceram)\b/gi, 'vieram'],
+  [/\bquando (o |a )?([A-Za-zÀ-ÿ]+) nasceu\b/gi, function(m, a, n){ return 'quando é o aniversário d' + (a && a.trim() === 'a' ? 'a ' : 'o ') + n; }],
+  [/\bquem é que\b/gi, 'quem'], [/\bme (diz|diga|fala|fale|conta|conte|mostra|mostre)\b/gi, 'me fala'],
+  // pedidos para CRIAR algo: bota/põe/coloca/anota/inclui/programa/lança... + evento/visita/reunião/ata
+  [/\b(bota|botar|bote|põe|poe|pôr|coloca|colocar|coloque|anota|anotar|anote|inclui|incluir|inclua|programa|programar|programe|lança|lanca|lançar|lancar|lance|registre|cadastre|adicione|crie|agende|marque|faz|fazer|faça|faca|quero|queria|preciso|vamos|vou)\s+(?:(?:criar|marcar|agendar|cadastrar|fazer|registrar|programar)\s+)?(um|uma|o|a|novo|nova)\s+(novo\s+|nova\s+)?(evento|visita|reunião|reuniao|ata)\b/gi, function(m, v, art, nv, nome){ return 'criar ' + (art || '') + ' ' + (nv || '') + nome; }],
   [/\brecita tivos?\b/gi, 'recitativo'], [/\breci tativos?\b/gi, 'recitativo'], [/\brecitativa\b/gi, 'recitativo'],
   [/\bver sinhos?\b/gi, 'versinho'], [/\bversinho de\b/gi, 'versinho de'],
   [/\blança mentos?\b/gi, 'lançamento'],
@@ -12516,6 +12538,8 @@ function _glCorrigirFala(original) {
   s = s.replace(new RegExp('\\b' + N + '\\s+horas?\\b', 'gi'), function(m, a){ var h = _glPalavrasNumero(a); return h !== null && h <= 24 ? h + 'h' : m; });
   // "segunda continuação" / "dois continuação" → "2ª continuação"
   s = s.replace(/\b(primeira|segunda|terceira|quarta|quinta|um|uma|dois|duas|tr[eê]s|quatro|cinco)\s+(cont)/gi, function(m, a, c){ return _glPalavrasNumero(a) + 'ª ' + c; });
+  // quantidades: "últimas três reuniões", "próximos quinze dias"
+  s = s.replace(new RegExp('\\b(últimas|ultimas|últimos|ultimos|próximas|proximas|próximos|proximos)\\s+' + N + '\\s+(reuniões|reunioes|dias|semanas|meses|domingos)\\b', 'gi'), function(m, ant, a, palavra){ var n = _glPalavrasNumero(a); return n !== null ? ant + ' ' + n + ' ' + palavra : m; });
   // capítulo/versículo falados: "capítulo vinte e três", "versículo um"
   s = s.replace(new RegExp('\\b(cap[ií]tulo|vers[ií]culo|verso)\\s+' + N + '\\b', 'gi'), function(m, k, a){ return k + ' ' + num(a); });
   return s;
@@ -13167,7 +13191,7 @@ function _glPedacos(original, def) {
     ['pular', /\b(pular|pula|pule)\b/g],
     tipos.indexOf('cont') >= 0 ? ['cont', /\b([1-5]\s?[aª]?\s?cont\w*|(primeira|segunda|terceira|quarta|quinta)\s+cont\w*)/g] : null,
     ['data', new RegExp('\\b(depois de amanha|amanha|hoje|ontem|(proxim[oa] )?(domingo|segunda|terca|quarta|quinta|sexta|sabado)(-feira)?( que vem)?|\\d{1,2}/\\d{1,2}(/\\d{2,4})?|(dia )?\\d{1,2} de (' + meses + ')( de \\d{4})?|dia \\d{1,2})\\b', 'g')],
-    tipos.indexOf('hora') >= 0 ? ['hora', /\b((as|a) \d{1,2}(:\d{2}|h\d{0,2}| horas?)?|\d{1,2}(:\d{2}|h\d{0,2})|meio dia|meia noite)\b/g] : null,
+    tipos.indexOf('hora') >= 0 ? ['hora', /\b((as|a) \d{1,2}(:\d{2}|h\d{0,2}| horas?)?( (da|de) (manha|tarde|noite))?|\d{1,2}(:\d{2}|h\d{0,2}| horas?)( (da|de) (manha|tarde|noite))?|\d{1,2} (da|de) (manha|tarde|noite)|meio dia|meia noite)\b/g] : null,
     tipos.indexOf('genero') >= 0 ? ['genero', /\b(irmao|irma)\b/g] : null,
     tipos.indexOf('telefone') >= 0 ? ['telefone', /(\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/g] : null,
     tipos.indexOf('simnao') >= 0 ? ['simnao', /\b(privado|privada|publico|publica)\b/g] : null,
@@ -13395,16 +13419,15 @@ async function _glorinhaBotao(iMsg, iBotao) {
 function _glorinhaResponder(r) {
   _glorinhaHist.push({ role: 'model', text: r.texto, botoes: r.botoes || null });
   _glorinhaRender();
-  // Conversa por voz + pergunta pendente (modo comando): depois de falar, já ouve a próxima resposta.
-  // Se a conversa começou com "Glorinha", quem ouve é o ouvido local (sem trocar de microfone).
+  // Conversa por voz + pergunta pendente (modo comando): depois de falar, já ouve a próxima resposta
   var ouvirDepois = r.continuarOuvindo && _glorinhaModoVoz && !r.depois
     ? function() {
-        if (!document.getElementById('modal-glorinha').classList.contains('open') || _glorinhaPensando || _glCaptura || _glorinhaReconhecimento) return;
-        if (_glModoCaptura === 'local' && _glOuvido.stream) _glCapturaIniciar('');
-        else glorinhaMicrofone();
+        if (!document.getElementById('modal-glorinha').classList.contains('open') || _glorinhaPensando || _glorinhaReconhecimento || _glOuvido.preparando) return;
+        glorinhaMicrofone();
       }
     : null;
-  var falar = _glorinhaFalarResposta && !r.silencioso; // ditado: não fala no meio, pra não atrapalhar
+  // Não fala no ditado nem enquanto o microfone está ouvindo (ele pegaria a voz dela como se fosse a pessoa)
+  var falar = _glorinhaFalarResposta && !r.silencioso && !_glorinhaReconhecimento;
   _glorinhaFalarResposta = false;
   if (falar) _glorinhaFalar(r.fala || r.texto, ouvirDepois);
   else if (ouvirDepois) setTimeout(ouvirDepois, 150);
@@ -13516,16 +13539,15 @@ function _glOuvidoFechar() {
 function _glOuvidoOuviu(texto, final) {
   texto = String(texto || '').trim();
   if (!_glOuvido.stream || Date.now() - _glOuvido.abertoEm < 800) return;
-  var falando = !!_glorinhaFalaAtual || ('speechSynthesis' in window && speechSynthesis.speaking);
-  // Ouvindo um comando (depois do "Glorinha"): junta o que a pessoa fala.
-  // Enquanto ela própria fala, ignora (o microfone pode captar a voz dela).
-  if (_glCaptura && !falando) { _glCapturaAtualizar(texto, final); return; }
   if (!texto || !GL_CHAMADO.test(_glNorm(texto)) || Date.now() - _glOuvido.ultimo < 3000) return;
   _glOuvido.ultimo = Date.now();
-  _glChamou(texto.replace(GL_CHAMADO_ORIGINAL, '').replace(/^(a |o )?linha$/i, '').trim());
+  _glChamou();
 }
-// Chamaram "Glorinha" = apertar o botão do 🎤
-function _glChamou(jaFalou) {
+// Chamaram "Glorinha" = apertar o botão do 🎤.
+// O ouvido local (no aparelho) só serve pra ouvir o chamado: o COMANDO quem
+// entende é o reconhecimento do Google, que é bem mais preciso (o local troca
+// muitas palavras, ex.: "recitou" → "ressuscitou").
+function _glChamou() {
   if (_glorinhaFalaAtual || ('speechSynthesis' in window && speechSynthesis.speaking)) {
     if (_glorinhaFalaAtual) _glorinhaFalaAtual._interrompida = true;
     speechSynthesis.cancel();
@@ -13533,76 +13555,8 @@ function _glChamou(jaFalou) {
   }
   if (!document.getElementById('modal-glorinha').classList.contains('open')) abrirGlorinha();
   _glorinhaModoVoz = true;
-  // O próprio ouvido local ouve o comando — não troca de microfone, então não
-  // perde o começo da fala e não dá bip.
-  if (_glOuvido.stream) { _glCapturaIniciar(jaFalou || ''); return; }
-  // Reserva (ouvido local indisponível): o 🎤 do Google
   _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
-  setTimeout(function(){ if (!_glorinhaReconhecimento) glorinhaMicrofone(); }, 50);
-}
-
-// ── Captura do comando pelo ouvido local ──
-// Normal: junta a fala e envia depois de 2 s de silêncio.
-// Modo comando (ditado): cada pausa (~1,3 s) é um campo; continua ouvindo até
-// preencher tudo ou a pessoa dizer "pronto".
-const GLORINHA_PAUSA_CAMPO_MS = 1300;
-let _glCaptura = null;
-let _glModoCaptura = 'google'; // quem ouviu a última fala: 'local' (ouvido) ou 'google' (🎤)
-function _glCapturaIniciar(inicial) {
-  if (_glCaptura) clearTimeout(_glCaptura.timer);
-  _glCaptura = { feitos: [], parcial: inicial || '', ultima: inicial ? Date.now() : 0, timer: null };
-  _glModoCaptura = 'local';
-  _glorinhaSetOuvindo(true, _glFluxo ? '🔴 Ditando… faça uma pausa entre cada campo. Diga "pronto" para terminar.' : '🔴 Ouvindo… envio depois de 2s em silêncio (ou toque no 🎤)');
-  _glCapturaMostrar();
-  _glCapturaAgendar();
-}
-function _glCapturaTexto() { return _glCaptura ? (_glCaptura.feitos.join(' ') + ' ' + _glCaptura.parcial).replace(/\s+/g, ' ').trim() : ''; }
-function _glCapturaMostrar() { var i = document.getElementById('glorinha-input'); if (i) i.value = _glCapturaTexto(); }
-function _glCapturaAtualizar(texto, final) {
-  var c = _glCaptura;
-  if (texto && GL_CHAMADO.test(_glNorm(texto))) texto = texto.replace(GL_CHAMADO_ORIGINAL, '').replace(/^(a |o )?linha$/i, '').trim();
-  // o "Glorinha" às vezes chega como "linha" no começo da primeira frase
-  if (texto && !c.feitos.length) texto = texto.replace(/^(a |o )?linha\b[\s,]*/i, '').trim();
-  if (final) {
-    if (texto) c.feitos.push(texto);
-    c.parcial = '';
-  } else {
-    if (texto === c.parcial) return;
-    c.parcial = texto;
-  }
-  _glCapturaMostrar();
-  // Só palavra NOVA reinicia a contagem do silêncio — no silêncio o reconhecedor
-  // continua mandando avisos vazios, que não podem segurar o envio
-  if (texto) { c.ultima = Date.now(); _glCapturaAgendar(); }
-}
-function _glCapturaAgendar() {
-  var c = _glCaptura;
-  clearTimeout(c.timer);
-  var espera = !c.ultima ? (_glFluxo ? 20000 : GLORINHA_ESPERA_MS) : (_glFluxo ? GLORINHA_PAUSA_CAMPO_MS : GLORINHA_PAUSA_MS);
-  c.timer = setTimeout(_glCapturaPausa, espera);
-}
-function _glCapturaPausa() {
-  var c = _glCaptura;
-  if (!c) return;
-  var txt = _glCapturaTexto();
-  if (_glFluxo && txt) {
-    // Ditado: esta fala é o próximo campo; continua ouvindo
-    c.feitos = []; c.parcial = ''; c.ultima = 0;
-    _glorinhaFalarResposta = true;
-    glorinhaEnviar(txt);
-    if (_glCaptura) { _glCapturaMostrar(); _glCapturaAgendar(); }
-    return;
-  }
-  _glCapturaParar();
-  if (!txt) { showToast('Não ouvi nada 🙉 Diga "Glorinha" de novo ou toque no 🎤'); return; }
-  _glorinhaFalarResposta = true;
-  glorinhaEnviar(txt);
-}
-function _glCapturaParar() {
-  if (!_glCaptura) return;
-  clearTimeout(_glCaptura.timer);
-  _glCaptura = null;
-  _glorinhaSetOuvindo(false);
+  setTimeout(function(){ if (!_glorinhaReconhecimento) glorinhaMicrofone(); }, 30);
 }
 // Mantém o ouvido aberto quando deve; solta o microfone enquanto o 🎤 do comando está em uso
 setInterval(function() {
@@ -13637,7 +13591,6 @@ function glorinhaAlternarOuvir(chk) {
 function fecharGlorinha() {
   document.getElementById('modal-glorinha').classList.remove('open');
   _glFluxo = null; // fechou no meio de um comando guiado: desiste dele
-  _glCapturaParar();
   _glorinhaPararVoz();
   if (_glorinhaReconhecimento) _glorinhaReconhecimento.abort();
   if (_glorinhaGravador && _glorinhaGravador.state === 'recording') {
@@ -13764,9 +13717,6 @@ function _glorinhaSetOuvindo(ligado, aviso) {
 }
 
 function glorinhaMicrofone() {
-  // Ouvido local já está ouvindo um comando: tocar no 🎤 envia na hora
-  // (no ditado do modo comando, fecha o campo atual e continua ouvindo o próximo)
-  if (_glCaptura) { clearTimeout(_glCaptura.timer); _glCapturaPausa(); return; }
   if (_glorinhaReconhecimento) { _glorinhaReconhecimento.stop(); return; }
   if (_glorinhaGravador && _glorinhaGravador.state === 'recording') { _glorinhaGravador.stop(); return; }
   if (_glorinhaPensando || _glOuvido.preparando) return;
@@ -13777,7 +13727,6 @@ function glorinhaMicrofone() {
   var ouvidoEstavaAberto = !!_glOuvido.stream || !!_glOuvido.abrindo;
   _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
   _glOuvidoFechar();
-  _glModoCaptura = 'google';
   var iniciar = function() {
     _glOuvido.preparando = false;
     if (window.SpeechRecognition || window.webkitSpeechRecognition) _glorinhaOuvirNoAparelho();
@@ -13787,7 +13736,7 @@ function glorinhaMicrofone() {
     // dá tempo do aparelho liberar o microfone de verdade antes de começar
     _glOuvido.preparando = true;
     _glorinhaSetOuvindo(true, '⏳ Preparando o microfone…');
-    setTimeout(iniciar, 500);
+    setTimeout(iniciar, 350);
   } else iniciar();
 }
 
@@ -13828,29 +13777,47 @@ function _glorinhaOuvirNoAparelho() {
     if (erro === 'not-allowed') { showToast('🎤 Permita o uso do microfone para falar com a Glorinha'); return; }
     if (!falado && erro && erro !== 'no-speech' && erro !== 'aborted') { _glorinhaGravarAudio(); return; } // reconhecimento indisponível: grava
     if (falado) { _glorinhaFalarResposta = true; glorinhaEnviar(falado); }
+    else if (_glFluxo) showToast('⏸️ Ditado pausado — toque no 🎤 (ou diga "Glorinha") para continuar');
     else showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo' + (erro ? ' (código: ' + erro + ')' : ''));
+  };
+  // Modo comando (ditado): cada trecho que o reconhecimento fecha numa pausa vai
+  // direto para o próximo campo, e o microfone continua até completar ou "pronto"
+  var enviadoNaSessao = '';
+  var enviarTrecho = function(trecho) {
+    // alguns Androids repetem o texto acumulado: manda só a parte nova
+    var novo = trecho;
+    if (enviadoNaSessao && _glNorm(trecho).indexOf(_glNorm(enviadoNaSessao)) === 0) novo = trecho.slice(enviadoNaSessao.length).trim();
+    enviadoNaSessao = trecho;
+    if (!novo) return;
+    input.value = '';
+    _glorinhaFalarResposta = true;
+    glorinhaEnviar(novo);
+    if (!_glFluxo) { cancelado = true; ctl.stop(); } // o comando terminou (abriu a tela) ou foi cancelado
   };
   var sessao = function() {
     rec = new SR();
     rec.lang = 'pt-BR';
     rec.interimResults = true;
     rec.continuous = true;
+    enviadoNaSessao = '';
     rec.onresult = function(e) {
       parcial = '';
       for (var i = e.resultIndex; i < e.results.length; i++) {
         var trecho = String(e.results[i][0].transcript || '').trim();
         if (!trecho) continue;
-        if (e.results[i].isFinal) juntar(trecho); else parcial = trecho;
+        if (!e.results[i].isFinal) { parcial = trecho; continue; }
+        if (_glFluxo) enviarTrecho(trecho); else juntar(trecho);
       }
       ultimaFala = Date.now();
       input.value = textoAtual();
-      encerrarEm(GLORINHA_PAUSA_MS); // ainda falando: recomeça a contagem do silêncio
+      encerrarEm(_glFluxo ? 20000 : GLORINHA_PAUSA_MS); // ditado: espera o próximo campo; normal: 2 s de silêncio
     };
     rec.onerror = function(e) { erro = e.error; };
     rec.onend = function() {
-      if (parcial) { juntar(parcial); parcial = ''; } // encerrou no meio de uma frase: guarda o que já ouviu
+      if (parcial) { if (_glFluxo && !terminar) { enviarTrecho(parcial); } else juntar(parcial); parcial = ''; } // encerrou no meio de uma frase: aproveita o que já ouviu
       var grave = erro && erro !== 'no-speech' && erro !== 'aborted';
-      var noPrazo = ultimaFala ? (Date.now() - ultimaFala < GLORINHA_PAUSA_MS) : (Date.now() - inicio < GLORINHA_ESPERA_MS);
+      var noPrazo = _glFluxo ? (Date.now() - (ultimaFala || inicio) < 20000)
+        : ultimaFala ? (Date.now() - ultimaFala < GLORINHA_PAUSA_MS) : (Date.now() - inicio < GLORINHA_ESPERA_MS);
       if (!terminar && !grave && noPrazo) {
         erro = null;
         try { sessao(); return; } catch(x) {} // religa e continua ouvindo
@@ -13863,7 +13830,7 @@ function _glorinhaOuvirNoAparelho() {
     sessao();
     _glorinhaReconhecimento = ctl;
     encerrarEm(GLORINHA_ESPERA_MS);
-    _glorinhaSetOuvindo(true, '🔴 Ouvindo… pode fazer pausas. Envio depois de 2s em silêncio (ou toque no 🎤)');
+    _glorinhaSetOuvindo(true, _glFluxo ? '🔴 Ditando… uma pausa entre cada campo. Diga "pronto" para terminar.' : '🔴 Ouvindo… pode fazer pausas. Envio depois de 2s em silêncio (ou toque no 🎤)');
   } catch(e) { _glorinhaGravarAudio(); }
 }
 

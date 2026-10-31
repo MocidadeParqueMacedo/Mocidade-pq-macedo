@@ -12438,7 +12438,10 @@ function _glResto(original, depoisDe) {
   var o = String(original), i = o.search(depoisDe);
   if (i < 0) return '';
   var s = o.slice(i).replace(depoisDe, '');
-  if (s.indexOf(':') >= 0) s = s.slice(s.indexOf(':') + 1);
+  // "evento ...: Título" — os dois-pontos de um horário ("19:30") não contam
+  for (var k = 0; k < s.length; k++) {
+    if (s[k] === ':' && !(/\d/.test(s[k - 1] || '') && /\d/.test(s[k + 1] || ''))) { s = s.slice(k + 1); break; }
+  }
   return s.replace(/\b(dia|para o dia|no dia)\s+\d{1,2}(\/\d{1,2}(\/\d{2,4})?)?(\s+de\s+\w+)?/gi, ' ')
     .replace(/\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/g, ' ')
     .replace(/\b(às|as|a)\s+\d{1,2}(:\d{2}|h\d{0,2})?\b/gi, ' ').replace(/\b\d{1,2}(:\d{2}|h\d{0,2})\b/gi, ' ')
@@ -12448,6 +12451,92 @@ function _glResto(original, depoisDe) {
     .replace(/^[\s,:;.\-–—]+|[\s,:;.\-–—]+$/g, '').replace(/\s{2,}/g, ' ');
 }
 function _glLocal(original) { var m = String(original).match(/\s(?:na|no|em)\s+([^,.]+?)\s*$/i); return m ? m[1].trim() : ''; }
+
+// ════════ CORRETOR DE FALA ════════
+// O reconhecimento de voz às vezes troca palavras ("recitou" → "ressuscitou").
+// Antes de interpretar, corrige as trocas conhecidas e converte números falados
+// em algarismos SÓ onde são data/hora/continuação (pra não estragar títulos).
+const _GL_TROCAS = [
+  [/\bressuscit(ou|aram|ar|a|ando|ativo|ativos)\b/gi, function(m, s){ return 'recit' + s; }],
+  [/\bressuscitou\b/gi, 'recitou'],
+  [/\brecita tivos?\b/gi, 'recitativo'], [/\breci tativos?\b/gi, 'recitativo'], [/\brecitativa\b/gi, 'recitativo'],
+  [/\bver sinhos?\b/gi, 'versinho'], [/\bversinho de\b/gi, 'versinho de'],
+  [/\blança mentos?\b/gi, 'lançamento'],
+  [/\bcontinua ação\b/gi, 'continuação'], [/\bcontínua ção\b/gi, 'continuação'],
+  [/\b(polar|pulo|pule|pula|pulou|bular)\b/gi, 'pular'],
+  [/\bcomanda\b/gi, 'comando'], [/\bco mando\b/gi, 'comando'],
+  [/\bfreqüência\b/gi, 'frequência'], [/\bfrequencia\b/gi, 'frequência'],
+  [/\baniversa rio\b/gi, 'aniversário'],
+  [/\b(florinha|lorinha|loirinha|gorinha|glorinho|gloria nha|glória nha)\b/gi, 'Glorinha'],
+];
+const _GL_NUM = { zero:0, um:1, uma:1, primeiro:1, primeira:1, dois:2, duas:2, segundo:2, segunda:2, tres:3, terceiro:3, terceira:3, quatro:4, quarto:4, quarta:4, cinco:5, quinto:5, quinta:5,
+  seis:6, sete:7, oito:8, nove:9, dez:10, onze:11, doze:12, treze:13, quatorze:14, catorze:14, quinze:15, dezesseis:16, dezessete:17, dezoito:18, dezenove:19,
+  vinte:20, trinta:30, quarenta:40, cinquenta:50, sessenta:60, setenta:70, oitenta:80, noventa:90, cem:100, cento:100, duzentos:200 };
+// Horário falado: "dezenove" → [19,0]; "dezenove e trinta" → [19,30]; "vinte e uma e quinze" → [21,15]
+function _glHoraFalada(txt) {
+  var partes = String(txt).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/\s+e\s+/);
+  var val = function(lista){ var n = 0; for (var i = 0; i < lista.length; i++) { var v = _glPalavrasNumero(lista[i]); if (v === null) return null; n += v; } return n; };
+  var opcoes = [];
+  for (var k = 1; k <= partes.length; k++) {
+    var h = val(partes.slice(0, k)), min = k < partes.length ? val(partes.slice(k)) : 0;
+    if (h !== null && min !== null && h <= 23 && min <= 59) opcoes.push([h, min]);
+  }
+  if (!opcoes.length) return null;
+  // prefere minutos "redondos" (30, 15, 45...) quando há dúvida ("vinte e uma e trinta")
+  var redondo = opcoes.filter(function(o){ return o[1] % 5 === 0; });
+  return (redondo.length ? redondo : opcoes)[ (redondo.length ? redondo : opcoes).length - 1 ];
+}
+// "vinte e um" → 21, "cento e dezenove" → 119
+function _glPalavrasNumero(txt) {
+  var total = 0, ok = false;
+  String(txt).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/\s+e\s+|\s+/).forEach(function(p){ if (_GL_NUM[p] !== undefined) { total += _GL_NUM[p]; ok = true; } });
+  return ok ? total : null;
+}
+function _glCorrigirFala(original) {
+  var s = String(original || '');
+  _GL_TROCAS.forEach(function(par){ s = s.replace(par[0], par[1]); });
+  var N = '((?:vinte|trinta|quarenta|cinquenta|cento|cem|duzentos|dez|onze|doze|treze|quatorze|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|zero|um|uma|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove)(?:\\s+e\\s+(?:vinte|trinta|quarenta|cinquenta|dez|onze|doze|treze|quatorze|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|um|uma|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove))*)';
+  var meses = '(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)';
+  var num = function(x){ var n = _glPalavrasNumero(x); return n === null ? x : String(n); };
+  // Ano falado: "dois mil e oito" → 2008, "mil novecentos e noventa e oito" → 1998
+  s = s.replace(new RegExp('\\bdois\\s+mil(?:\\s+e\\s+' + N + ')?\\b', 'gi'), function(m, a){ return String(2000 + (a ? (_glPalavrasNumero(a) || 0) : 0)); });
+  s = s.replace(new RegExp('\\bmil\\s+(?:e\\s+)?novecentos(?:\\s+e\\s+' + N + ')?\\b', 'gi'), function(m, a){ return String(1900 + (a ? (_glPalavrasNumero(a) || 0) : 0)); });
+  // "dia onze do dez" / "onze do dez" → 11/10
+  s = s.replace(new RegExp('\\b(dia\\s+)?' + N + '\\s+do\\s+' + N + '\\b', 'gi'), function(m, dia, a, b){ var x = _glPalavrasNumero(a), y = _glPalavrasNumero(b); return (x && y && x <= 31 && y <= 12) ? (dia || '') + x + '/' + y : m; });
+  // "dia quinze" / "quinze de novembro"
+  s = s.replace(new RegExp('\\bdia\\s+' + N + '\\b', 'gi'), function(m, a){ return 'dia ' + num(a); });
+  s = s.replace(new RegExp('\\b' + N + '\\s+de\\s+' + meses, 'gi'), function(m, a, mes){ return num(a) + ' de ' + mes; });
+  // "às dezenove e trinta" / "às sete e meia" / "dezenove horas"
+  // (sem \b antes de "às": o \b do JavaScript não reconhece letra acentuada como começo de palavra)
+  s = s.replace(new RegExp('(^|\\s)(às|as)\\s+' + N + '(\\s+e\\s+meia)?(\\s+horas?)?\\b', 'gi'), function(m, ini, as, a, meia) {
+    var hm = _glHoraFalada(a);
+    if (!hm) return m;
+    return ini + as + ' ' + hm[0] + ':' + String(meia ? 30 : hm[1]).padStart(2, '0');
+  });
+  s = s.replace(new RegExp('\\b' + N + '\\s+horas?\\b', 'gi'), function(m, a){ var h = _glPalavrasNumero(a); return h !== null && h <= 24 ? h + 'h' : m; });
+  // "segunda continuação" / "dois continuação" → "2ª continuação"
+  s = s.replace(/\b(primeira|segunda|terceira|quarta|quinta|um|uma|dois|duas|tr[eê]s|quatro|cinco)\s+(cont)/gi, function(m, a, c){ return _glPalavrasNumero(a) + 'ª ' + c; });
+  // capítulo/versículo falados: "capítulo vinte e três", "versículo um"
+  s = s.replace(new RegExp('\\b(cap[ií]tulo|vers[ií]culo|verso)\\s+' + N + '\\b', 'gi'), function(m, k, a){ return k + ' ' + num(a); });
+  return s;
+}
+// Segunda tentativa: troca palavras desconhecidas pela palavra-chave mais parecida
+const _GL_CHAVES = ['recitou','recitaram','recitativo','recitativos','versinho','versinhos','aniversario','aniversarios','frequencia','presenca','presencas','continuacao',
+  'visita','visitas','evento','eventos','lancamento','lancamentos','faltou','faltaram','faltas','reuniao','reunioes','membro','membros','auxiliar','auxiliares',
+  'comando','marcar','cadastrar','cadastra','agenda','visitantes','telefone','endereco','relatorio','presentes','pular','cancelar','pronto'];
+function _glAproximar(t) {
+  if (typeof _distanciaEdicao !== 'function') return t;
+  var mudou = false;
+  var novo = t.split(' ').map(function(w) {
+    if (w.length < 5 || _GL_CHAVES.indexOf(w) >= 0) return w;
+    var melhor = null, dist = 99;
+    _GL_CHAVES.forEach(function(k){ var d = _distanciaEdicao(w, k); if (d < dist) { dist = d; melhor = k; } });
+    var tol = w.length >= 8 ? 2 : 1;
+    if (melhor && dist <= tol) { mudou = true; return melhor; }
+    return w;
+  }).join(' ');
+  return mudou ? novo : null;
+}
 
 // ════════ CONSULTAS DETALHADAS (bot local, sem IA) ════════
 // Busca qualquer informação por data, pessoa, continuação ou aba, direto nos
@@ -13102,23 +13191,26 @@ function _glPedacos(original, def) {
 }
 
 // Encaixa os pedaços nos campos, respeitando a ordem; devolve os valores achados
-function _glEncaixar(def, original) {
-  var campos = _glCamposDe(def), valores = {}, pulados = {}, i = 0;
-  _glPedacos(original, def).forEach(function(p) {
-    if (p.tipo === 'pular') { if (i < campos.length) { pulados[campos[i].k] = true; i++; } return; }
-    // procura, a partir do campo atual, o próximo que aceita esse tipo de pedaço
+// Encaixa os pedaços de uma fala nos campos, a partir do primeiro campo ainda
+// vazio do comando (f.valores/f.pulados). Devolve os campos preenchidos agora.
+function _glEncaixar(f, original) {
+  var campos = _glCamposDe(f.def), novos = [];
+  var pendente = function(c){ return f.valores[c.k] === undefined && !f.pulados[c.k]; };
+  var i = campos.findIndex(pendente); if (i < 0) i = campos.length;
+  _glPedacos(original, f.def).forEach(function(p) {
+    if (p.tipo === 'pular') { while (i < campos.length && !pendente(campos[i])) i++; if (i < campos.length) { f.pulados[campos[i].k] = true; novos.push({ c: campos[i], pulou: true }); i++; } return; }
+    // procura, a partir do campo atual, o próximo vazio que aceita esse tipo de pedaço
     for (var j = i; j < campos.length; j++) {
       var c = campos[j];
-      if (valores[c.k] !== undefined || pulados[c.k]) continue;
-      var aceita = c.tipo === p.tipo || (p.tipo === 'texto' && c.tipo === 'texto');
-      if (!aceita) continue;
+      if (!pendente(c)) continue;
+      if (c.tipo !== p.tipo) continue;
       var v = p.tipo === 'texto' ? p.txt : _glValorCampo(c, p.txt);
       if (c.tipo === 'texto' && c.k === 'local') v = v.replace(/^(na|no|em|nas|nos)\s+/i, '');
       if (v === null || v === '') break;
-      valores[c.k] = v; i = j + 1; break;
+      f.valores[c.k] = v; novos.push({ c: c }); i = j + 1; break;
     }
   });
-  return { valores: valores, pulados: pulados };
+  return novos;
 }
 
 function _glFmtValor(c, v) {
@@ -13134,11 +13226,17 @@ function _glPerguntaCampo(c) {
   var dica = c.tipo === 'data' ? ' (ex: amanhã, domingo, 15/11)' : c.tipo === 'hora' ? ' (ex: 19h, às 20:30)' : '';
   return 'Qual ' + (/^(Data|Continuação|Observação)/.test(c.rot) ? 'a ' : 'o ') + '**' + c.rot + '**?' + dica + (c.obrig ? '' : ' — ou diga **pular**');
 }
-function _glFluxoProximo() {
-  var f = _glFluxo;
-  var campos = _glCamposDe(f.def);
+// Depois de cada fala no ditado: mostra o que preencheu (sem falar, pra não
+// atrapalhar) e já fica ouvindo o próximo campo. Terminou tudo → abre a tela.
+function _glFluxoProgresso(novos) {
+  var f = _glFluxo, campos = _glCamposDe(f.def);
   var falta = campos.find(function(c){ return f.valores[c.k] === undefined && !f.pulados[c.k]; });
-  if (falta) { f.perguntando = falta; return { texto: _glPerguntaCampo(falta), continuarOuvindo: true }; }
+  if (!falta) return _glFluxoFinalizar();
+  var feito = novos.map(function(n){ return n.pulou ? '⏭️ ' + n.c.rot.replace(/ \(.*\)$/, '') + ': pulado' : '✔ **' + n.c.rot.replace(/ \(.*\)$/, '') + ':** ' + _glFmtValor(n.c, f.valores[n.c.k]); }).join('\n');
+  return { texto: (feito ? feito + '\n' : '') + '👉 Agora: **' + falta.rot + '**', silencioso: true, continuarOuvindo: true };
+}
+function _glFluxoFinalizar() {
+  var f = _glFluxo, campos = _glCamposDe(f.def);
   // Terminou: mostra o resumo e abre a tela do app preenchida
   var def = f.def, valores = f.valores;
   _glFluxo = null;
@@ -13150,30 +13248,47 @@ function _glFluxoProximo() {
 function _glFluxoIniciar(chave) {
   var def = _GL_FORMS[chave];
   if (!_glPode(def.nivel)) return _glNegado(def.nivel);
-  _glFluxo = { def: def, valores: {}, pulados: {}, perguntando: null };
+  _glFluxo = { def: def, valores: {}, pulados: {}, ultimoTexto: null, ultimoEm: 0 };
   var campos = _glCamposDe(def);
-  return { texto: '📋 **' + def.titulo + '** — fale nesta ordem:\n' + campos.map(function(c, i){ return (i + 1) + '. ' + c.rot; }).join('\n') +
-    '\n\nPode falar **tudo de uma vez** (ex: ' + (chave === 'evento' ? '"Ajuntamento na casa do cooperador amanhã às 21"' : chave === 'visita' ? '"Eliane sábado às 20h"' : chave === 'membro' ? '"João irmão 2ª continuação 15/03/2008"' : '"domingo"') + ') que eu pergunto o que faltar. Diga **pular** para deixar um campo em branco, ou **cancelar** para desistir.',
+  var rotulos = campos.map(function(c){ return c.rot.replace(/ \(.*\)$/, ''); });
+  return { texto: '📋 **' + def.titulo + '** — fale nesta ordem, com uma **pausa** entre cada um:\n' + campos.map(function(c, i){ return (i + 1) + '. ' + c.rot; }).join('\n') +
+    '\n\nDiga **pular** para deixar um campo em branco, **pronto** para terminar, ou **cancelar** para desistir. Também pode falar tudo de uma vez (ex: ' + (chave === 'evento' ? '"Ajuntamento na casa do cooperador amanhã às 21"' : chave === 'visita' ? '"Eliane sábado às 20h"' : chave === 'membro' ? '"João irmão 2ª continuação 15/03/2008"' : '"domingo"') + ').',
+    fala: 'Pode falar, com uma pausa entre cada um: ' + rotulos.join(', ') + '.',
     continuarOuvindo: true };
 }
-// Resposta da pessoa enquanto o modo comando está ativo
+// Cada fala da pessoa enquanto o modo comando está ativo (um ou vários campos)
 function _glFluxoResponder(original) {
   var f = _glFluxo, t = _glNorm(original).replace(/^glorinha[, ]*/, '');
+  var campos = _glCamposDe(f.def);
   if (/^(cancela|cancelar|cancele|desistir|deixa pra la|esquece|parar)\b/.test(t)) { _glFluxo = null; return { texto: 'Tudo bem, cancelei 👍' }; }
-  if (f.perguntando) {
-    var c = f.perguntando;
-    if (/^(pular|pula|pule|proximo|nenhum|nenhuma|sem)\b/.test(t)) { f.pulados[c.k] = true; f.perguntando = null; return _glFluxoProximo(); }
-    var v = _glValorCampo(c, original);
-    if (v === null) return { texto: 'Não entendi 🤔 ' + _glPerguntaCampo(c), continuarOuvindo: true };
-    if (c.k === 'local' && typeof v === 'string') v = v.replace(/^(na|no|em|nas|nos)\s+/i, '');
-    f.valores[c.k] = v; f.perguntando = null;
-    return _glFluxoProximo();
+  if (/^(pronto|terminei|terminou|fim|acabou|e so|so isso|pode abrir|pode salvar|concluir|finalizar|ok pode)\b/.test(t)) {
+    campos.forEach(function(c){ if (f.valores[c.k] === undefined) f.pulados[c.k] = true; });
+    return _glFluxoFinalizar();
   }
-  // Primeira fala depois da ordem: pode vir tudo de uma vez
-  var r = _glEncaixar(f.def, original);
-  Object.keys(r.valores).forEach(function(k){ f.valores[k] = r.valores[k]; });
-  Object.keys(r.pulados).forEach(function(k){ f.pulados[k] = true; });
-  return _glFluxoProximo();
+  var atual = campos.find(function(c){ return f.valores[c.k] === undefined && !f.pulados[c.k]; });
+  if (!atual) return _glFluxoFinalizar();
+  // Só "pular" (ou "próximo", "nenhum"...): pula o campo atual
+  if (/^(pular|proximo|nenhum|nenhuma|sem|nao tem|deixa em branco)$/.test(t)) { f.pulados[atual.k] = true; return _glFluxoProgresso([{ c: atual, pulou: true }]); }
+  var pedacos = _glPedacos(original, f.def);
+  var soTexto = pedacos.length === 1 && pedacos[0].tipo === 'texto';
+  if (soTexto && atual.tipo !== 'texto') {
+    // Campo de data/hora/sim-não... falado sozinho
+    var v = _glValorCampo(atual, original);
+    if (v !== null) { f.valores[atual.k] = v; return _glFluxoProgresso([{ c: atual }]); }
+    // A pausa pode ter partido um texto no meio ("Ajuntamento na casa do" | "cooperador"): junta no campo anterior
+    if (f.ultimoTexto && Date.now() - f.ultimoEm < 6000) {
+      f.valores[f.ultimoTexto.k] += ' ' + String(original).trim().replace(/[.!?]+$/, '');
+      f.ultimoEm = Date.now();
+      return _glFluxoProgresso([{ c: f.ultimoTexto }]);
+    }
+    return { texto: 'Não entendi 🤔 ' + _glPerguntaCampo(atual), continuarOuvindo: true };
+  }
+  var novos = _glEncaixar(f, original);
+  if (!novos.length) return { texto: 'Não entendi 🤔 ' + _glPerguntaCampo(atual), continuarOuvindo: true };
+  var ultimo = novos[novos.length - 1];
+  f.ultimoTexto = (!ultimo.pulou && ultimo.c.tipo === 'texto') ? ultimo.c : null;
+  f.ultimoEm = Date.now();
+  return _glFluxoProgresso(novos);
 }
 
 function _glAjuda() {
@@ -13203,6 +13318,14 @@ function _glorinhaLocal(original) {
   var t = _glNorm(original).replace(/^(ei |oi |ola |e ai )?glorinha\b[ ,]*/, '');
   if (!t) return { texto: 'Oi! Tô aqui 😊 Pode falar.', continuarOuvindo: true };
   original = String(original).replace(/^\s*(ei |oi |olá |ola |e aí |e ai )?glorinha\b[\s,!.]*/i, '');
+  var r = _glTentarIntencoes(t, original);
+  if (r) return r;
+  // Não entendeu: tenta de novo trocando palavras parecidas pelas palavras-chave
+  // (ex.: "recitivo" → "recitativo", "aniverssario" → "aniversario")
+  var t2 = _glAproximar(t);
+  return t2 ? _glTentarIntencoes(t2, original) : null;
+}
+function _glTentarIntencoes(t, original) {
   for (var i = 0; i < _GL_INTENCOES.length; i++) {
     var it = _GL_INTENCOES[i];
     // Antes das consultas genéricas antigas, tenta as consultas detalhadas
@@ -13272,12 +13395,19 @@ async function _glorinhaBotao(iMsg, iBotao) {
 function _glorinhaResponder(r) {
   _glorinhaHist.push({ role: 'model', text: r.texto, botoes: r.botoes || null });
   _glorinhaRender();
-  // Conversa por voz + pergunta pendente (modo comando): depois de falar, já ouve a próxima resposta
+  // Conversa por voz + pergunta pendente (modo comando): depois de falar, já ouve a próxima resposta.
+  // Se a conversa começou com "Glorinha", quem ouve é o ouvido local (sem trocar de microfone).
   var ouvirDepois = r.continuarOuvindo && _glorinhaModoVoz && !r.depois
-    ? function(){ if (document.getElementById('modal-glorinha').classList.contains('open') && !_glorinhaPensando) glorinhaMicrofone(); }
+    ? function() {
+        if (!document.getElementById('modal-glorinha').classList.contains('open') || _glorinhaPensando || _glCaptura || _glorinhaReconhecimento) return;
+        if (_glModoCaptura === 'local' && _glOuvido.stream) _glCapturaIniciar('');
+        else glorinhaMicrofone();
+      }
     : null;
-  if (_glorinhaFalarResposta) { _glorinhaFalarResposta = false; _glorinhaFalar(r.texto, ouvirDepois); }
-  else if (ouvirDepois) setTimeout(ouvirDepois, 400);
+  var falar = _glorinhaFalarResposta && !r.silencioso; // ditado: não fala no meio, pra não atrapalhar
+  _glorinhaFalarResposta = false;
+  if (falar) _glorinhaFalar(r.fala || r.texto, ouvirDepois);
+  else if (ouvirDepois) setTimeout(ouvirDepois, 150);
   if (typeof r.depois === 'function') setTimeout(r.depois, 900); // dá tempo de ler a confirmação
 }
 // ── "Glorinha!" — ouvido LOCAL, sem bip (opcional, liga/desliga) ──
@@ -13291,7 +13421,8 @@ function _glorinhaResponder(r) {
 // O modelo não conhece a palavra "Glorinha": ele a ouve como "loirinha" (testado).
 const GL_VOSK_JS = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
 const GL_MODELO_URL = new URL('modelos/vosk-pt-pequeno.tar.gz', location.href).href;
-const GL_CHAMADO = /\b(g?loirinha|glorinha|gloria nha|glorinho)\b|^(a |o )?linha$/;
+const GL_CHAMADO = /\b(g?loirinha|glorinha|gloria nha|glorinho|florinha|lorinha|gorinha)\b|^(a |o )?linha$/;
+const GL_CHAMADO_ORIGINAL = /^[\s\S]*?\b(g?loirinha|glorinha|gl[oó]ria nha|glorinho|florinha|lorinha|gorinha)\b[\s,!.]*/i;
 let _glOuvido = { rec: null, taxa: 0, stream: null, ctx: null, carregando: null, falhou: false, ultimo: 0 };
 
 function _glVigiaLigado() { try { return localStorage.getItem('rj_glorinha_ouvir') === '1'; } catch(e) { return false; } }
@@ -13333,8 +13464,8 @@ function _glOuvidoCarregar(taxa) {
   }).then(function(modelo) {
     _glOuvido.modelo = modelo;
     var rec = new modelo.KaldiRecognizer(taxa);
-    rec.on('partialresult', function(m){ _glOuvidoOuviu(m.result.partial); });
-    rec.on('result', function(m){ _glOuvidoOuviu(m.result.text); });
+    rec.on('partialresult', function(m){ _glOuvidoOuviu(m.result.partial, false); });
+    rec.on('result', function(m){ _glOuvidoOuviu(m.result.text, true); });
     _glOuvido.rec = rec; _glOuvido.taxa = taxa;
     _glOuvidoAviso('');
   }).finally(function(){ _glOuvido.carregando = null; });
@@ -13345,15 +13476,18 @@ async function _glOuvidoAbrir() {
   if (_glOuvido.stream || _glOuvido.carregando || _glOuvido.abrindo) return;
   _glOuvido.abrindo = true;
   try {
-    var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+    // Sem "redução de ruído" (ela corta voz baixa/distante) e com ganho automático
+    // de volume; o cancelamento de eco continua (tira a voz dela do alto-falante).
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true, channelCount: 1 } });
     if (!_glOuvidoDeveOuvir()) { stream.getTracks().forEach(function(t){ t.stop(); }); return; }
     var Ctx = window.AudioContext || window.webkitAudioContext, ctx;
     try { ctx = new Ctx({ sampleRate: 16000 }); } catch(e) { ctx = new Ctx(); }
     await _glOuvidoCarregar(ctx.sampleRate);
     if (!_glOuvidoDeveOuvir()) { stream.getTracks().forEach(function(t){ t.stop(); }); ctx.close(); return; }
     var fonte = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1);
+    var ganho = ctx.createGain(); ganho.gain.value = 2.5; // reforço: entende sem precisar falar alto
     proc.onaudioprocess = function(e) { if (_glOuvido.ctx === ctx && _glOuvido.rec) { try { _glOuvido.rec.acceptWaveform(e.inputBuffer); } catch(x) {} } };
-    fonte.connect(proc); proc.connect(ctx.destination);
+    fonte.connect(ganho); ganho.connect(proc); proc.connect(ctx.destination);
     if (ctx.state === 'suspended') ctx.resume();
     _glOuvido.stream = stream; _glOuvido.ctx = ctx; _glOuvido.abertoEm = Date.now();
   } catch(e) {
@@ -13379,26 +13513,96 @@ function _glOuvidoFechar() {
   // ("loirinha quem faz…") chamaria a Glorinha de novo à toa
   if (tinha && _glOuvido.rec) { try { _glOuvido.rec.retrieveFinalResult(); } catch(e) {} }
 }
-function _glOuvidoOuviu(texto) {
-  if (!texto || !_glOuvido.stream || Date.now() - _glOuvido.abertoEm < 800) return;
-  var n = _glNorm(texto);
-  if (!GL_CHAMADO.test(n) || Date.now() - _glOuvido.ultimo < 3000) return;
+function _glOuvidoOuviu(texto, final) {
+  texto = String(texto || '').trim();
+  if (!_glOuvido.stream || Date.now() - _glOuvido.abertoEm < 800) return;
+  var falando = !!_glorinhaFalaAtual || ('speechSynthesis' in window && speechSynthesis.speaking);
+  // Ouvindo um comando (depois do "Glorinha"): junta o que a pessoa fala.
+  // Enquanto ela própria fala, ignora (o microfone pode captar a voz dela).
+  if (_glCaptura && !falando) { _glCapturaAtualizar(texto, final); return; }
+  if (!texto || !GL_CHAMADO.test(_glNorm(texto)) || Date.now() - _glOuvido.ultimo < 3000) return;
   _glOuvido.ultimo = Date.now();
-  _glChamou();
+  _glChamou(texto.replace(GL_CHAMADO_ORIGINAL, '').replace(/^(a |o )?linha$/i, '').trim());
 }
 // Chamaram "Glorinha" = apertar o botão do 🎤
-function _glChamou() {
+function _glChamou(jaFalou) {
   if (_glorinhaFalaAtual || ('speechSynthesis' in window && speechSynthesis.speaking)) {
     if (_glorinhaFalaAtual) _glorinhaFalaAtual._interrompida = true;
     speechSynthesis.cancel();
     var parar = document.getElementById('glorinha-parar-voz'); if (parar) parar.style.display = 'none';
   }
-  // Trava o ouvido local (não reabre sozinho) — o glorinhaMicrofone solta o
-  // microfone e espera o aparelho liberar antes de ouvir o comando
-  _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
   if (!document.getElementById('modal-glorinha').classList.contains('open')) abrirGlorinha();
   _glorinhaModoVoz = true;
+  // O próprio ouvido local ouve o comando — não troca de microfone, então não
+  // perde o começo da fala e não dá bip.
+  if (_glOuvido.stream) { _glCapturaIniciar(jaFalou || ''); return; }
+  // Reserva (ouvido local indisponível): o 🎤 do Google
+  _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
   setTimeout(function(){ if (!_glorinhaReconhecimento) glorinhaMicrofone(); }, 50);
+}
+
+// ── Captura do comando pelo ouvido local ──
+// Normal: junta a fala e envia depois de 2 s de silêncio.
+// Modo comando (ditado): cada pausa (~1,3 s) é um campo; continua ouvindo até
+// preencher tudo ou a pessoa dizer "pronto".
+const GLORINHA_PAUSA_CAMPO_MS = 1300;
+let _glCaptura = null;
+let _glModoCaptura = 'google'; // quem ouviu a última fala: 'local' (ouvido) ou 'google' (🎤)
+function _glCapturaIniciar(inicial) {
+  if (_glCaptura) clearTimeout(_glCaptura.timer);
+  _glCaptura = { feitos: [], parcial: inicial || '', ultima: inicial ? Date.now() : 0, timer: null };
+  _glModoCaptura = 'local';
+  _glorinhaSetOuvindo(true, _glFluxo ? '🔴 Ditando… faça uma pausa entre cada campo. Diga "pronto" para terminar.' : '🔴 Ouvindo… envio depois de 2s em silêncio (ou toque no 🎤)');
+  _glCapturaMostrar();
+  _glCapturaAgendar();
+}
+function _glCapturaTexto() { return _glCaptura ? (_glCaptura.feitos.join(' ') + ' ' + _glCaptura.parcial).replace(/\s+/g, ' ').trim() : ''; }
+function _glCapturaMostrar() { var i = document.getElementById('glorinha-input'); if (i) i.value = _glCapturaTexto(); }
+function _glCapturaAtualizar(texto, final) {
+  var c = _glCaptura;
+  if (texto && GL_CHAMADO.test(_glNorm(texto))) texto = texto.replace(GL_CHAMADO_ORIGINAL, '').replace(/^(a |o )?linha$/i, '').trim();
+  // o "Glorinha" às vezes chega como "linha" no começo da primeira frase
+  if (texto && !c.feitos.length) texto = texto.replace(/^(a |o )?linha\b[\s,]*/i, '').trim();
+  if (final) {
+    if (texto) c.feitos.push(texto);
+    c.parcial = '';
+  } else {
+    if (texto === c.parcial) return;
+    c.parcial = texto;
+  }
+  _glCapturaMostrar();
+  // Só palavra NOVA reinicia a contagem do silêncio — no silêncio o reconhecedor
+  // continua mandando avisos vazios, que não podem segurar o envio
+  if (texto) { c.ultima = Date.now(); _glCapturaAgendar(); }
+}
+function _glCapturaAgendar() {
+  var c = _glCaptura;
+  clearTimeout(c.timer);
+  var espera = !c.ultima ? (_glFluxo ? 20000 : GLORINHA_ESPERA_MS) : (_glFluxo ? GLORINHA_PAUSA_CAMPO_MS : GLORINHA_PAUSA_MS);
+  c.timer = setTimeout(_glCapturaPausa, espera);
+}
+function _glCapturaPausa() {
+  var c = _glCaptura;
+  if (!c) return;
+  var txt = _glCapturaTexto();
+  if (_glFluxo && txt) {
+    // Ditado: esta fala é o próximo campo; continua ouvindo
+    c.feitos = []; c.parcial = ''; c.ultima = 0;
+    _glorinhaFalarResposta = true;
+    glorinhaEnviar(txt);
+    if (_glCaptura) { _glCapturaMostrar(); _glCapturaAgendar(); }
+    return;
+  }
+  _glCapturaParar();
+  if (!txt) { showToast('Não ouvi nada 🙉 Diga "Glorinha" de novo ou toque no 🎤'); return; }
+  _glorinhaFalarResposta = true;
+  glorinhaEnviar(txt);
+}
+function _glCapturaParar() {
+  if (!_glCaptura) return;
+  clearTimeout(_glCaptura.timer);
+  _glCaptura = null;
+  _glorinhaSetOuvindo(false);
 }
 // Mantém o ouvido aberto quando deve; solta o microfone enquanto o 🎤 do comando está em uso
 setInterval(function() {
@@ -13433,6 +13637,7 @@ function glorinhaAlternarOuvir(chk) {
 function fecharGlorinha() {
   document.getElementById('modal-glorinha').classList.remove('open');
   _glFluxo = null; // fechou no meio de um comando guiado: desiste dele
+  _glCapturaParar();
   _glorinhaPararVoz();
   if (_glorinhaReconhecimento) _glorinhaReconhecimento.abort();
   if (_glorinhaGravador && _glorinhaGravador.state === 'recording') {
@@ -13483,6 +13688,7 @@ async function glorinhaEnviar(textoSugestao, audio) {
   var input = document.getElementById('glorinha-input');
   var texto = (textoSugestao || input.value || '').trim();
   if ((!texto && !audio) || _glorinhaPensando) return;
+  if (texto) texto = _glCorrigirFala(texto); // "ressuscitou" → "recitou", "dia onze do dez" → "dia 11/10"...
   input.value = '';
   _glorinhaModoVoz = !!_glorinhaFalarResposta; // pergunta veio por voz? (aí a conversa continua por voz)
 
@@ -13558,6 +13764,9 @@ function _glorinhaSetOuvindo(ligado, aviso) {
 }
 
 function glorinhaMicrofone() {
+  // Ouvido local já está ouvindo um comando: tocar no 🎤 envia na hora
+  // (no ditado do modo comando, fecha o campo atual e continua ouvindo o próximo)
+  if (_glCaptura) { clearTimeout(_glCaptura.timer); _glCapturaPausa(); return; }
   if (_glorinhaReconhecimento) { _glorinhaReconhecimento.stop(); return; }
   if (_glorinhaGravador && _glorinhaGravador.state === 'recording') { _glorinhaGravador.stop(); return; }
   if (_glorinhaPensando || _glOuvido.preparando) return;
@@ -13568,6 +13777,7 @@ function glorinhaMicrofone() {
   var ouvidoEstavaAberto = !!_glOuvido.stream || !!_glOuvido.abrindo;
   _glOuvido.segurar = true; _glOuvido.segurarDesde = Date.now();
   _glOuvidoFechar();
+  _glModoCaptura = 'google';
   var iniciar = function() {
     _glOuvido.preparando = false;
     if (window.SpeechRecognition || window.webkitSpeechRecognition) _glorinhaOuvirNoAparelho();

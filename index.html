@@ -912,6 +912,7 @@
   @keyframes fadeInDown { from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);} }
   #painel-online-total-bar { background:linear-gradient(135deg,var(--primary-dark),var(--primary));color:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:.82rem;font-weight:800;letter-spacing:.3px; }
   #painel-online-total-bar .total-num { font-size:1.4rem;font-weight:900;line-height:1; }
+  .presence-toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .2s; }
   .presence-toggle.checked::after { left: 23px; }
 
   .photo-upload { width: 100px; height: 100px; border-radius: 50%; border: 3px dashed var(--primary-light); display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; margin: 0 auto 12px; font-size: .72rem; color: var(--text-muted); text-align: center; overflow: hidden; background: var(--bg); }
@@ -1920,6 +1921,19 @@
 </div>
 
 <!-- MODAL: NOVO MEMBRO -->
+<div class="modal-overlay" id="modal-inativar" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal">
+    <div class="modal-title">⏸️ Inativar membro</div>
+    <div style="font-size:.85rem;margin-bottom:10px;"><b id="inativar-nome"></b> vai continuar no cadastro, mas não aparece mais nas outras funções (chamada, faltas, recitativos...).</div>
+    <div class="form-group"><label>Justificativa *</label>
+      <textarea id="inativar-motivo" rows="3" placeholder="Por que ele(a) não faz mais parte?" style="width:100%;resize:vertical;"></textarea></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-secondary" style="flex:1;" onclick="document.getElementById('modal-inativar').classList.remove('open')">Cancelar</button>
+      <button class="btn btn-primary" style="flex:1;" onclick="confirmarInativarMembro()">Inativar</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-novo">
   <div class="modal">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
@@ -1978,6 +1992,8 @@
       </div>
     </div>
     <div class="form-group"><label>🏠 Endereço</label><input type="text" id="novo-endereco" placeholder="Rua, número, bairro..."/></div>
+    <div class="form-group"><label>📅 Membro desde</label><input type="date" id="novo-desde"/>
+      <div style="font-size:.7rem;color:var(--text-muted);margin-top:3px;">Reuniões antes dessa data não contam como falta pra ele.</div></div>
     <div class="form-group" style="display:flex;align-items:center;gap:10px;">
       <input type="checkbox" id="novo-auxiliar" style="width:auto"/>
       <label for="novo-auxiliar" style="margin:0">⭐ Marcar como Auxiliar/Líder</label>
@@ -2055,6 +2071,11 @@
         <button class="btn btn-sm btn-secondary" id="cm-btn-local" onclick="cmMinhaLocalizacao()" style="flex:1;min-width:140px;">📍 Minha localização</button>
         <button class="btn btn-sm btn-primary" id="cm-btn-atualizar" onclick="cmAtualizar()" style="flex:1;min-width:140px;">🔄 Atualizar</button>
       </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <input type="search" id="cm-busca" placeholder="🔍 Pesquisar comum (ex: Vila Japão em Suzano)" onkeydown="if(event.key==='Enter'){this.blur();cmPesquisar();}" style="flex:1;min-width:0;"/>
+        <button class="btn btn-sm btn-primary" onclick="cmPesquisar()" style="flex-shrink:0;">Buscar</button>
+      </div>
+      <div id="cm-resultados" style="display:none;margin-bottom:8px;font-size:.8rem;"></div>
       <div id="cm-mapa" style="height:62vh;min-height:320px;border-radius:12px;overflow:hidden;border:1px solid var(--border);background:var(--bg);"></div>
       <div id="cm-legenda" style="display:flex;gap:12px;flex-wrap:wrap;font-size:.75rem;margin-top:8px;color:var(--text);"></div>
       <div id="cm-info" style="font-size:.72rem;color:var(--text-muted);margin-top:6px;line-height:1.4;"></div>
@@ -3695,7 +3716,9 @@ function abrirModalEventoComAuth() { exigirAuth(() => abrirModalEvento()); }
 
 // DATA LAYER ════════
 const DB = {
-  get members()   { return JSON.parse(localStorage.getItem('rj_members')   || '[]'); },
+  // members = só os ATIVOS (o que todas as funções usam); todosMembros = inclusive inativos (cadastro)
+  get members()   { return JSON.parse(localStorage.getItem('rj_members')   || '[]').filter(function(m){ return m && !m.inativo; }); },
+  get todosMembros() { return JSON.parse(localStorage.getItem('rj_members') || '[]').filter(Boolean); },
   set members(v)  { localStorage.setItem('rj_members',   JSON.stringify(v)); window._fbSyncWrite && window._fbSyncWrite('rj_members', v); },
   get meetings()  { return JSON.parse(localStorage.getItem('rj_meetings')  || '[]'); },
   set meetings(v) { localStorage.setItem('rj_meetings',  JSON.stringify(v)); window._fbSyncWrite && window._fbSyncWrite('rj_meetings', v); },
@@ -3883,7 +3906,12 @@ function closeFab() {
   document.getElementById('fab-backdrop').classList.remove('open');
   document.getElementById('fab-main-btn').textContent = '＋';
 }
-function abrirModalNovo()    { closeFab(); document.getElementById('modal-novo').classList.add('open'); }
+function abrirModalNovo()    {
+  closeFab();
+  // Membro novo: "membro desde" já vem com hoje (dá pra trocar)
+  var d = document.getElementById('novo-desde'); if (d && !_editMembroId) d.value = todayISO();
+  document.getElementById('modal-novo').classList.add('open');
+}
 function fecharModalNovo()   { _editMembroId = null; document.getElementById('modal-novo-titulo').textContent = '➕ Novo Membro'; const excBtn = document.getElementById('btn-excluir-membro'); if(excBtn) excBtn.style.display='none'; document.getElementById('modal-novo').classList.remove('open'); }
 function abrirModalEvento()  { document.getElementById('modal-evento').classList.add('open'); }
 function fecharModalEvento() { document.getElementById('modal-evento').classList.remove('open'); }
@@ -4139,7 +4167,7 @@ let _prevContGroup = null; // guarda {gender, key} se estava num sub-filtro
 
 function abrirEditarMembro(id) {
   exigirAuth(function(){
-    const m = DB.members.find(x => String(x.id) === String(id));
+    const m = DB.todosMembros.find(x => String(x.id) === String(id));
     if (!m) return;
     _editMembroId = id;
     currentPhotoData = m.foto || null;
@@ -4170,6 +4198,7 @@ function abrirEditarMembro(id) {
     document.getElementById('novo-nascimento').value = m.nascimento || '';
     document.getElementById('novo-tel').value = m.tel || '';
     document.getElementById('novo-endereco').value = m.endereco || '';
+    document.getElementById('novo-desde').value = m.desde || '';
     document.getElementById('novo-auxiliar').checked = !!m.auxiliar;
     document.getElementById('novo-pai-nome').value = (m.pai && m.pai.nome) || '';
     document.getElementById('novo-pai-tel').value = (m.pai && m.pai.tel) || '';
@@ -4192,13 +4221,14 @@ async function salvarMembro() {
     nascimento: document.getElementById('novo-nascimento').value,
     tel: document.getElementById('novo-tel').value,
     endereco: document.getElementById('novo-endereco').value.trim(),
+    desde: document.getElementById('novo-desde').value || '',
     auxiliar: document.getElementById('novo-auxiliar').checked,
     pai:{ nome:document.getElementById('novo-pai-nome').value, tel:document.getElementById('novo-pai-tel').value },
     mae:{ nome:document.getElementById('novo-mae-nome').value, tel:document.getElementById('novo-mae-tel').value },
     foto: currentPhotoData || null
   };
   // Busca lista atual do Firebase
-  let mb = DB.members;
+  let mb = DB.todosMembros;
   try {
     if (window.FB && window.FB.read) {
       const val = await window.FB.read('app/members');
@@ -4222,7 +4252,7 @@ async function salvarMembro() {
 
 async function excluirMembroById(id) {
   if (!confirm('Excluir este membro permanentemente?')) return;
-  let mb = DB.members;
+  let mb = DB.todosMembros;
   try {
     if (window.FB && window.FB.read) {
       const val = await window.FB.read('app/members');
@@ -4241,7 +4271,7 @@ async function excluirMembroById(id) {
 async function excluirMembro() {
   if (!_editMembroId) return;
   if (!confirm('Excluir este membro permanentemente?')) return;
-  let mb = DB.members;
+  let mb = DB.todosMembros;
   try {
     if (window.FB && window.FB.read) {
       const val = await window.FB.read('app/members');
@@ -4259,8 +4289,9 @@ async function excluirMembro() {
 function resetNovoForm() {
   _editMembroId = null;
   currentPhotoData = null;
-  ['novo-nome','novo-tel','novo-pai-nome','novo-pai-tel','novo-mae-nome','novo-mae-tel','novo-nascimento']
+  ['novo-nome','novo-tel','novo-pai-nome','novo-pai-tel','novo-mae-nome','novo-mae-tel','novo-nascimento','novo-endereco']
     .forEach(id => document.getElementById(id).value = '');
+  document.getElementById('novo-desde').value = todayISO();
   document.getElementById('novo-genero').value = '';
   document.getElementById('novo-continuacao').innerHTML = '<option value="">Selecione o gênero primeiro</option>';
   document.getElementById('novo-auxiliar').checked = false;
@@ -4639,7 +4670,11 @@ function _buildChartData(meetings, memberIds, tm) {
     }
     return count;
   });
-  const data = presentes.map(p => totalBase > 0 ? Math.round((p / totalBase) * 100) : p);
+  // Base de cada reunião = quem já era membro naquela data (membro desde)
+  const data = presentes.map((p, i) => {
+    const base = (tm === 'visitantes' || memberIds) ? totalBase : DB.members.filter(mb => membroValeEm(mb, meetings[i].date)).length;
+    return base > 0 ? Math.round((p / base) * 100) : p;
+  });
   return { presentes, data, totalBase };
 }
 
@@ -4974,6 +5009,9 @@ function renderPresencaChamada() {
   // Membros cadastrados (Comum)
   if (tipoMembro === 'comum' || tipoMembro === 'comum_visitantes') {
     let members = DB.members;
+    // Quem ainda não era membro na data da reunião não aparece (a não ser que já esteja marcado)
+    const _mtAtual = DB.meetings.find(mt => (mt.id && String(mt.id) === String(currentMeetingId)) || mt.date === currentMeetingId);
+    if (_mtAtual) members = members.filter(m => membroValeEm(m, _mtAtual.date) || presencaInterna[m.id]);
     if (presencaGeneroFiltro !== 'todos') members = members.filter(m=>m.genero===presencaGeneroFiltro);
     if (presencaContFiltro !== 'todos') members = members.filter(m=>String(m.continuacao)===String(presencaContFiltro));
     // Ordem alfabética
@@ -5014,7 +5052,9 @@ function renderPresencaChamada() {
           const idx = sorted.findIndex(mt => String(mt.id||mt.date) === String(currentMeetingId));
           if (idx < 0) return 0;
           let count = 0;
+          const mb = DB.todosMembros.find(x => String(x.id) === String(membId));
           for (let i = idx+1; i < sorted.length; i++) {
+            if (!membroValeEm(mb, sorted[i].date)) break; // antes de ser membro não é falta
             const p = sorted[i].present || [];
             if (p.includes(String(membId)) || p.includes(membId)) break;
             count++;
@@ -5103,7 +5143,9 @@ function _contarFaltasConsecPast(membId) {
     .filter(function(mt){ return mt.date <= hoje; })
     .sort(function(a,b){ return b.date.localeCompare(a.date); });
   var count = 0;
+  var mb = DB.todosMembros.find(function(x){ return String(x.id) === String(membId); });
   for (var i = 0; i < past.length; i++) {
+    if (!membroValeEm(mb, past[i].date)) break; // antes de ser membro não é falta
     var p = past[i].present || [];
     if (p.includes(String(membId)) || p.includes(membId) || p.includes(parseInt(membId))) break;
     count++;
@@ -5195,8 +5237,9 @@ function renderFreqInterna() {
   el.innerHTML = `<table class="freq-table"><thead><tr><th>Nome</th><th>Presenças</th><th>%</th></tr></thead><tbody>`+
     members.map(m=>{
       const count=meetings.filter(mt=>mt.present&&mt.present.includes(m.id)).length;
-      const pct=total?Math.round(count/total*100):0;
-      return `<tr><td>${m.nome}</td><td>${count}/${total}</td>
+      const totM=meetings.filter(mt=>(!mt.isScheduled||(mt.present&&mt.present.length>0))&&membroValeEm(m, mt.date)).length;
+      const pct=totM?Math.round(count/totM*100):0;
+      return `<tr><td>${m.nome}</td><td>${count}/${totM}</td>
         <td><div style="display:flex;align-items:center;gap:6px">${pct}%
         <div class="freq-bar" style="width:${pct}px;max-width:60px"></div></div></td></tr>`;
     }).join('')+`</tbody></table>`;
@@ -5519,14 +5562,14 @@ async function _fbLoadMembros() {
       }
     }
   } catch(e) {}
-  return DB.members; // retorna lista atualizada do localStorage
+  return DB.todosMembros; // lista atualizada do localStorage (inclusive inativos, pro cadastro)
 }
 
 function openSubmenu(type) {
   _prevSubmenu = type; _prevContGroup = null;
   document.getElementById('membros-main-menu').style.display='none';
   document.querySelectorAll('.submenu').forEach(s=>s.classList.remove('active'));
-  _openSubmenuWithMembers(type, DB.members); // imediato
+  _openSubmenuWithMembers(type, DB.todosMembros); // imediato (inclusive inativos: é o cadastro)
   _fbLoadMembros().then(function(members){ _openSubmenuWithMembers(type, members); }).catch(function(){});
 }
 function _openSubmenuWithMembers(type, members) {
@@ -5564,7 +5607,7 @@ function _restoreSubmenu() {
 
 function showContGroup(gender,key) {
   _prevContGroup = {gender, key};
-  _showContGroupWith(gender, key, DB.members); // imediato
+  _showContGroupWith(gender, key, DB.todosMembros); // imediato
   _fbLoadMembros().then(function(members){ _showContGroupWith(gender, key, members); }).catch(function(){});
 }
 function _showContGroupWith(gender, key, members) {
@@ -5643,12 +5686,14 @@ function _relPlural(n, um, varios) { return n === 1 ? um : varios; }
 // Cálculo puro (não mexe na tela): recebe as reuniões e devolve tudo que o relatório mostra.
 function _relCalcular(membroId, reunioes, hojeISO, ano) {
   var id = String(membroId);
+  var _mb = DB.todosMembros.find(function(x){ return String(x.id) === id; });
   var realizadas = _relLista(reunioes)
     .filter(function(mt) { return typeof mt.date === 'string' && /^\d{4}-(0[1-9]|1[0-2])-\d{2}/.test(mt.date); })
     .map(function(mt) {
       return { date: mt.date.slice(0, 10), agendada: !!mt.isScheduled, presentes: _relLista(mt.present).map(String) };
     })
     .filter(function(mt) { return mt.presentes.length > 0 || (!mt.agendada && mt.date <= hojeISO); })
+    .filter(function(mt) { return membroValeEm(_mb, mt.date) || mt.presentes.indexOf(id) >= 0; }) // antes de ser membro não conta
     .sort(function(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
 
   var anos = [];
@@ -6035,7 +6080,7 @@ function abrirRelatorioMembro(id, ev) {
     var alvo = ev && ev.target;
     if (alvo && alvo.closest && alvo.closest('button, a, input, select, textarea, label')) return;
   } catch (e) {}
-  var m = DB.members.find(function(x) { return String(x.id) === String(id); });
+  var m = DB.todosMembros.find(function(x) { return String(x.id) === String(id); });
   if (!m) return;
   _relMembroId = String(id);
   _relAno = 'tudo';
@@ -6369,7 +6414,7 @@ function _waTelLabel(tel) {
 }
 
 function abrirWhatsAppMembro(id) {
-  const m = DB.members.find(function(x){ return String(x.id) === String(id); });
+  const m = DB.todosMembros.find(function(x){ return String(x.id) === String(id); });
   if (!m) return;
 
   const temPessoa = !!(m.tel && m.tel.trim());
@@ -6415,7 +6460,7 @@ function _waOpcao(label, tel, tem, tipo, id, contato) {
 
 function _waAbrirContato(tipo, id, contato) {
   document.getElementById('wa-menu-popup').remove();
-  const m = DB.members.find(function(x){ return String(x.id) === String(id); });
+  const m = DB.todosMembros.find(function(x){ return String(x.id) === String(id); });
   if (!m) return;
   var tel = '';
   if (contato === 'pessoa') tel = m.tel || '';
@@ -6428,20 +6473,203 @@ function memberCardHTML(m) {
   const count = DB.meetings.filter(mt=>mt.present&&mt.present.includes(m.id)).length;
   const visits = contarVisitasMembro ? contarVisitasMembro(m) : 0;
   const visitBadge = visits > 0 ? `<div style="margin-top:4px;"><span style="font-size:.65rem;background:#dcfce7;color:#166534;border-radius:20px;padding:1px 7px;font-weight:700;">🏠 ${visits} visita${visits>1?'s':''}</span></div>` : '';
-  return `<div class="member-item" onclick="abrirRelatorioMembro('${m.id}', event)" title="Ver relatório">${avatarHTML(m)}
-    <div class="member-info" style="flex:1;">
+  const inativo = m.inativo
+    ? `<div style="margin-top:6px;padding:6px 8px;background:var(--bg);border-left:3px solid var(--text-muted);border-radius:6px;font-size:.72rem;color:var(--text-muted);line-height:1.35;">
+        <b>Inativado em ${formatDate(m.inativadoEm || '')}:</b><br>${_relEsc(m.justificativaInativo || '—')}</div>`
+    : '';
+  return `<div class="member-item" onclick="abrirRelatorioMembro('${m.id}', event)" title="Ver relatório" style="${m.inativo ? 'opacity:.72;' : ''}">${avatarHTML(m)}
+    <div class="member-info" style="flex:1;min-width:0;">
       <div class="member-name">${m.nome}</div>
       <div class="member-detail">${genderLabel(m)} · ${contLabel(m)} · ${count} presenças</div>
       ${visitBadge}
       ${m.auxiliar?'<span class="member-badge">⭐ Auxiliar</span>':''}
+      ${inativo}
     </div>
-    <div style="display:flex;gap:4px;flex-shrink:0;">
-      <button onclick="abrirWhatsAppMembro('${m.id}')" style="background:none;border:none;color:#22c55e;font-size:1rem;cursor:pointer;padding:6px;border-radius:8px;" title="WhatsApp">📲</button>
-      <button onclick="abrirEditarMembro('${m.id}')" style="background:none;border:none;color:var(--primary);font-size:1rem;cursor:pointer;padding:6px;border-radius:8px;" title="Editar">✏️</button>
-      <button onclick="excluirMembroById('${m.id}')" style="background:none;border:none;color:var(--danger);font-size:1rem;cursor:pointer;padding:6px;border-radius:8px;" title="Excluir">🗑</button>
+    <div style="display:flex;gap:4px;flex-shrink:0;align-items:center;">
+      <button class="presence-toggle ${m.inativo ? '' : 'checked'}" onclick="event.stopPropagation();alternarMembroAtivo('${m.id}')" title="${m.inativo ? 'Inativo — tocar para ativar' : 'Ativo — tocar para inativar'}" style="margin-right:2px;"></button>
+      <button onclick="abrirWhatsAppMembro('${m.id}')" style="background:none;border:none;color:#22c55e;font-size:1rem;cursor:pointer;padding:4px;border-radius:8px;" title="WhatsApp">📲</button>
+      <button onclick="abrirEditarMembro('${m.id}')" style="background:none;border:none;color:var(--primary);font-size:1rem;cursor:pointer;padding:4px;border-radius:8px;" title="Editar">✏️</button>
+      <button onclick="excluirMembroById('${m.id}')" style="background:none;border:none;color:var(--danger);font-size:1rem;cursor:pointer;padding:4px;border-radius:8px;" title="Excluir">🗑</button>
     </div>
     </div>`;
 }
+// ════════ SELETOR DE DATA EM RODA ════════
+// Todo campo de data do app abre esta roda (dia · mês · ano) em vez do
+// calendário do aparelho. O campo continua sendo type="date" (valor AAAA-MM-DD),
+// só fica "somente leitura" pra o calendário nativo não abrir.
+const RODA_MESES = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+const RODA_H = 44; // altura de cada linha
+let _roda = null;
+function _rodaMontar() {
+  if (_roda) return _roda;
+  var css = document.createElement('style');
+  css.textContent =
+    '.roda-fundo{position:fixed;inset:0;background:rgba(15,23,42,.55);display:none;align-items:center;justify-content:center;z-index:100000;padding:16px}' +
+    '.roda-fundo.open{display:flex}' +
+    '.roda-caixa{background:var(--card);color:var(--text);border-radius:18px;width:100%;max-width:380px;padding:14px 18px 18px;box-shadow:0 20px 50px rgba(0,0,0,.35)}' +
+    '.roda-topo{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:8px}' +
+    '.roda-titulo{font-weight:800;font-size:1.1rem;text-align:center;flex:1}' +
+    '.roda-mini{background:none;border:none;color:var(--text-muted);font-size:.75rem;font-weight:700;cursor:pointer;padding:6px;min-width:52px;text-align:left}' +
+    '.roda-hoje{background:none;border:none;color:var(--text);cursor:pointer;padding:4px;min-width:52px;display:flex;justify-content:flex-end}' +
+    '.roda-colunas{position:relative;display:flex;height:' + (RODA_H * 3) + 'px}' +
+    '.roda-faixa{position:absolute;left:0;right:0;top:' + RODA_H + 'px;height:' + RODA_H + 'px;background:var(--bg);border-radius:10px;pointer-events:none}' +
+    '.roda-col{position:relative;flex:1;height:100%;overflow-y:scroll;scroll-snap-type:y mandatory;scrollbar-width:none;-webkit-overflow-scrolling:touch;' +
+      '-webkit-mask-image:linear-gradient(transparent,#000 28%,#000 72%,transparent);mask-image:linear-gradient(transparent,#000 28%,#000 72%,transparent)}' +
+    '.roda-col::-webkit-scrollbar{display:none}' +
+    '.roda-item{height:' + RODA_H + 'px;line-height:' + RODA_H + 'px;text-align:center;scroll-snap-align:center;font-size:1.02rem;color:var(--text-muted);cursor:pointer;transition:font-size .12s,color .12s;user-select:none}' +
+    '.roda-item.sel{color:var(--text);font-weight:800;font-size:1.18rem}' +
+    '.roda-pad{height:' + RODA_H + 'px}' +
+    '.roda-botoes{display:flex;gap:10px;margin-top:14px}' +
+    '.roda-botoes button{flex:1;padding:12px;border:none;border-radius:10px;font-weight:700;font-size:.95rem;color:#fff;cursor:pointer}' +
+    '.roda-cancelar{background:var(--danger)}.roda-confirmar{background:var(--primary)}';
+  document.head.appendChild(css);
+  var fundo = document.createElement('div');
+  fundo.className = 'roda-fundo';
+  fundo.innerHTML = '<div class="roda-caixa" role="dialog" aria-label="Selecione a data">' +
+    '<div class="roda-topo"><button class="roda-mini" type="button">Limpar</button><div class="roda-titulo">Selecione a data</div>' +
+    '<button class="roda-hoje" type="button" title="Hoje"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="M7.5 13.5h.01M12 13.5h.01M16.5 13.5h.01M7.5 17.5h.01M12 17.5h.01M16.5 17.5h.01" stroke-width="2.6"/></svg></button></div>' +
+    '<div class="roda-colunas"><div class="roda-faixa"></div><div class="roda-col"></div><div class="roda-col" style="flex:1.6"></div><div class="roda-col"></div></div>' +
+    '<div class="roda-botoes"><button class="roda-cancelar" type="button">Cancelar</button><button class="roda-confirmar" type="button">Confirmar</button></div></div>';
+  document.body.appendChild(fundo);
+  var cols = fundo.querySelectorAll('.roda-col');
+  _roda = { fundo: fundo, dia: cols[0], mes: cols[1], ano: cols[2], input: null, anos: [] };
+  [cols[0], cols[1], cols[2]].forEach(function(col) {
+    var t = null;
+    col.addEventListener('scroll', function() {
+      _rodaMarcar(col, _rodaIdx(col));
+      clearTimeout(t);
+      t = setTimeout(function(){ if (col !== _roda.dia) _rodaAjustarDias(); }, 120);
+    }, { passive: true });
+    col.addEventListener('click', function(e) {
+      var it = e.target.closest('.roda-item');
+      if (it) col.scrollTo({ top: +it.dataset.i * RODA_H, behavior: 'smooth' });
+    });
+  });
+  fundo.addEventListener('click', function(e){ if (e.target === fundo) _rodaFechar(); });
+  fundo.querySelector('.roda-cancelar').onclick = _rodaFechar;
+  fundo.querySelector('.roda-confirmar').onclick = function() {
+    var a = _roda.anos[_rodaIdx(_roda.ano)], m = _rodaIdx(_roda.mes) + 1;
+    var d = Math.min(_rodaIdx(_roda.dia) + 1, new Date(a, m, 0).getDate());
+    _rodaDefinir(a + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0'));
+  };
+  fundo.querySelector('.roda-mini').onclick = function(){ _rodaDefinir(''); };
+  fundo.querySelector('.roda-hoje').onclick = function() {
+    var h = new Date();
+    _rodaIr(_roda.ano, _roda.anos.indexOf(h.getFullYear()), true);
+    _rodaIr(_roda.mes, h.getMonth(), true);
+    setTimeout(function(){ _rodaAjustarDias(h.getDate() - 1); _rodaIr(_roda.dia, h.getDate() - 1, true); }, 160);
+  };
+  return _roda;
+}
+function _rodaIdx(col) { var n = col.querySelectorAll('.roda-item').length; return Math.max(0, Math.min(n - 1, Math.round(col.scrollTop / RODA_H))); }
+function _rodaMarcar(col, i) { col.querySelectorAll('.roda-item').forEach(function(el, k){ el.classList.toggle('sel', k === i); }); }
+function _rodaIr(col, i, suave) { if (i < 0) return; if (suave) col.scrollTo({ top: i * RODA_H, behavior: 'smooth' }); else col.scrollTop = i * RODA_H; _rodaMarcar(col, i); }
+function _rodaPreencher(col, itens, sel) {
+  col.innerHTML = '<div class="roda-pad"></div>' + itens.map(function(t, i){ return '<div class="roda-item" data-i="' + i + '">' + t + '</div>'; }).join('') + '<div class="roda-pad"></div>';
+  _rodaIr(col, sel);
+}
+// Mês/ano mudou: o dia vai até 28, 29, 30 ou 31
+function _rodaAjustarDias(quero) {
+  var a = _roda.anos[_rodaIdx(_roda.ano)], m = _rodaIdx(_roda.mes) + 1, n = new Date(a, m, 0).getDate();
+  var atual = quero != null ? quero : _rodaIdx(_roda.dia);
+  if (_roda.dia.querySelectorAll('.roda-item').length === n) return;
+  var dias = []; for (var i = 1; i <= n; i++) dias.push(i);
+  _rodaPreencher(_roda.dia, dias, Math.min(atual, n - 1));
+}
+function abrirRodaData(input) {
+  var r = _rodaMontar();
+  r.input = input;
+  var v = /^\d{4}-\d{2}-\d{2}$/.test(input.value) ? input.value : todayISO();
+  var a = +v.slice(0, 4), m = +v.slice(5, 7), d = +v.slice(8, 10), agora = new Date().getFullYear();
+  r.anos = []; for (var y = Math.min(1930, a); y <= Math.max(agora + 10, a); y++) r.anos.push(y);
+  r.fundo.classList.add('open');
+  _rodaPreencher(r.mes, RODA_MESES, m - 1);
+  _rodaPreencher(r.ano, r.anos, r.anos.indexOf(a));
+  var dias = []; for (var i = 1; i <= new Date(a, m, 0).getDate(); i++) dias.push(i);
+  _rodaPreencher(r.dia, dias, d - 1);
+  r.fundo.querySelector('.roda-mini').style.visibility = input.value && !input.required ? 'visible' : 'hidden';
+}
+function _rodaDefinir(valor) {
+  var el = _roda.input;
+  _rodaFechar();
+  if (!el) return;
+  el.value = valor;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+function _rodaFechar() { if (_roda) { _roda.fundo.classList.remove('open'); } }
+function _rodaLigar(el) {
+  if (el._roda || el.type !== 'date') return;
+  el._roda = true;
+  el.readOnly = true; // sem o calendário do aparelho
+  el.style.cursor = 'pointer';
+  var abrir = function(e) { if (el.disabled) return; e.preventDefault(); el.blur(); abrirRodaData(el); };
+  el.addEventListener('click', abrir);
+  el.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' ') abrir(e); });
+}
+(function() {
+  var ligarTudo = function(raiz) {
+    if (raiz.matches && raiz.matches('input[type="date"]')) _rodaLigar(raiz);
+    if (raiz.querySelectorAll) raiz.querySelectorAll('input[type="date"]').forEach(_rodaLigar);
+  };
+  var iniciar = function() {
+    ligarTudo(document);
+    new MutationObserver(function(ms){ ms.forEach(function(m){ m.addedNodes.forEach(function(n){ if (n.nodeType === 1) ligarTudo(n); }); }); })
+      .observe(document.body, { childList: true, subtree: true });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', iniciar); else iniciar();
+})();
+
+// ── Ativar / inativar membro ──
+// Inativo continua no cadastro (aba Membros, apagado), mas some de todas as outras
+// funções (chamada, faltas, recitativos, aniversários, estatísticas...). Inativar
+// pede a justificativa, que fica registrada no cartão com a data.
+function alternarMembroAtivo(id) {
+  exigirAuth(function() {
+    var m = DB.todosMembros.find(function(x){ return String(x.id) === String(id); });
+    if (!m) return;
+    if (m.inativo) {
+      if (!confirm('Ativar ' + m.nome + ' de novo?')) return;
+      _salvarSituacaoMembro(id, { inativo: false, reativadoEm: todayISO() }, 'ativou o membro ' + m.nome, '✅ ' + m.nome + ' está ativo');
+      return;
+    }
+    document.getElementById('inativar-nome').textContent = m.nome;
+    document.getElementById('inativar-motivo').value = '';
+    document.getElementById('modal-inativar').dataset.id = id;
+    document.getElementById('modal-inativar').classList.add('open');
+    setTimeout(function(){ document.getElementById('inativar-motivo').focus(); }, 200);
+  });
+}
+function confirmarInativarMembro() {
+  var modal = document.getElementById('modal-inativar'), id = modal.dataset.id;
+  var motivo = document.getElementById('inativar-motivo').value.trim();
+  if (!motivo) { showToast('Escreva a justificativa'); return; }
+  var m = DB.todosMembros.find(function(x){ return String(x.id) === String(id); });
+  modal.classList.remove('open');
+  _salvarSituacaoMembro(id, { inativo: true, inativadoEm: todayISO(), justificativaInativo: motivo }, 'inativou o membro ' + (m ? m.nome : ''), '⏸️ ' + (m ? m.nome : 'Membro') + ' inativado');
+  _removerAutoVisitaMembro(id).catch(function(){});
+}
+async function _salvarSituacaoMembro(id, dados, atividade, aviso) {
+  var mb = DB.todosMembros;
+  try {
+    if (window.FB && window.FB.read) {
+      var val = await window.FB.read('app/members');
+      if (val !== null && val !== undefined) mb = (Array.isArray(val) ? val : Object.values(val)).filter(Boolean);
+    }
+  } catch(e) {}
+  var i = mb.findIndex(function(x){ return String(x.id) === String(id); });
+  if (i < 0) return;
+  mb[i] = Object.assign({}, mb[i], dados);
+  localStorage.setItem('rj_members', JSON.stringify(mb));
+  if (window.FB && window.FB.write) window.FB.write('app/members', mb).catch(function(e){ console.warn(e); showToast('⚠️ Não consegui salvar'); });
+  showToast(aviso); registrarAtividade(atividade);
+  _restoreSubmenu();
+  var q = document.getElementById('membros-search-global');
+  if (q && q.value.trim()) renderMembrosGlobal();
+}
+// O membro já fazia parte nessa data? (sem "membro desde" = desde sempre)
+function membroValeEm(m, iso) { return !m || !m.desde || !iso || String(iso).slice(0, 10) >= m.desde; }
+
 function avatarHTML(m, size) {
   const s = size || '';
   const style = s ? `style="width:${s};height:${s};font-size:.75rem;"` : '';
@@ -6998,7 +7226,8 @@ function cmIrPara(lat, lng, codigo) {
     if (!codigo || !_cm.camada) return;
     _cm.camada.eachLayer(function(m){ if (m.options.codigo === codigo) m.openPopup(); });
   };
-  var perto = _cm.dados && _cm.centroCarregado && _cm.mapa && _cm.mapa.distance(_cm.centroCarregado, [lat, lng]) < 15000;
+  var perto = codigo ? !!(_cm.mapa && _cm.dados && _cm.dados.comuns.some(function(x){ return x.codigo === codigo; }))
+    : !!(_cm.dados && _cm.centroCarregado && _cm.mapa && _cm.mapa.distance(_cm.centroCarregado, [lat, lng]) < 15000);
   if (!perto) _cm.pendente = { lat: lat, lng: lng, zoom: zoom }; // cmAbrir carrega essa área
   showSection('visitas');
   openVisitasSubmenu('comuns');
@@ -7006,6 +7235,51 @@ function cmIrPara(lat, lng, codigo) {
   var espera = setInterval(function(){ if (!_cm.pendente && _cm.dados && !_cm.carregando) { clearInterval(espera); setTimeout(abrir, 200); } }, 400);
   setTimeout(function(){ clearInterval(espera); }, 60000);
 }
+// ── Pesquisar comum ──
+// 1º nas comuns já carregadas no mapa; não achou → procura no site (na cidade
+// digitada, "Vila Japão em Suzano", ou nas cidades em volta) e leva o mapa até ela.
+function _cmBate(c, q) {
+  var alvo = _cmNorm([c.nome, c.bairro, c.endereco, c.cidade].join(' '));
+  return _cmNorm(q).split(' ').filter(function(p){ return p.length > 1 && !/^(de|da|do|das|dos)$/.test(p); }).every(function(p){ return alvo.indexOf(p) >= 0; });
+}
+async function cmPesquisar() {
+  var inp = document.getElementById('cm-busca'), box = document.getElementById('cm-resultados');
+  var q = inp.value.trim();
+  if (q.length < 2) { box.style.display = 'none'; return; }
+  var comCidade = /,|\s(em|no|na)\s/i.test(q);
+  var locais = (!comCidade && _cm.dados) ? _cm.dados.comuns.filter(function(c){ return _cmBate(c, q); }) : [];
+  if (locais.length) return _cmMostrarResultados(locais, q);
+  box.style.display = 'block';
+  box.innerHTML = '<div style="color:var(--text-muted);">⏳ Não está no mapa carregado — procurando no site…</div>';
+  var centro = _cm.mapa ? _cm.mapa.getCenter() : { lat: CM_INICIO[0], lng: CM_INICIO[1] };
+  var r;
+  try { r = await cmBuscar({ busca: q, lat: centro.lat, lng: centro.lng, uf: (_cm.dados && _cm.dados.uf) || 'SP', excluir: _cm.dados ? _cm.dados.cidades.map(function(x){ return x.nome; }) : [] }); }
+  catch(e) { box.innerHTML = '<div style="color:var(--danger);">⚠️ ' + _cmEsc(e.message) + '</div>'; return; }
+  if (r.cidadeInteira && r.comuns.length) { box.style.display = 'none'; showToast('🗺️ Indo para ' + r.onde); cmIrPara(r.comuns[0].lat, r.comuns[0].lng); return; }
+  if (!r.comuns.length) { box.innerHTML = '<div style="color:var(--text-muted);">😕 Não achei "' + _cmEsc(q) + '". Tente com a cidade: <b>Nome em Cidade</b>.</div>'; return; }
+  _cmMostrarResultados(r.comuns, q);
+}
+function _cmMostrarResultados(lista, q) {
+  var box = document.getElementById('cm-resultados');
+  if (lista.length === 1) { box.style.display = 'none'; _cmIrComum(lista[0]); return; }
+  _cm.resultados = lista;
+  box.style.display = 'block';
+  box.innerHTML = '<div style="color:var(--text-muted);margin-bottom:4px;">' + lista.length + ' comuns com "' + _cmEsc(q) + '" — toque para ver no mapa:</div>' +
+    '<div style="max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;">' +
+    lista.slice(0, 30).map(function(c, i) {
+      return '<div onclick="_cmIrComum(_cm.resultados[' + i + '])" style="padding:8px 10px;border-bottom:1px solid var(--border);cursor:pointer;">' +
+        '<b>' + _cmEsc(c.nome) + '</b> <span style="color:var(--text-muted);">· ' + _cmEsc([c.bairro, c.cidade].filter(Boolean).join(', ')) + '</span></div>';
+    }).join('') + '</div>';
+}
+function _cmIrComum(c) {
+  document.getElementById('cm-resultados').style.display = 'none';
+  var carregada = _cm.dados && _cm.dados.comuns.some(function(x){ return x.codigo === c.codigo; });
+  if (!carregada || !_cm.mapa) { cmIrPara(c.lat, c.lng, c.codigo); return; }
+  _cm.mapa.setView([c.lat, c.lng], 16);
+  document.getElementById('cm-mapa').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(function(){ _cm.camada.eachLayer(function(m){ if (m.options.codigo === c.codigo) m.openPopup(); }); }, 350);
+}
+
 // Saiu do app: apaga tudo que foi carregado (só a situação de cada comum fica no banco)
 window.addEventListener('pagehide', function(){ _cm.dados = null; if (_cm.camada) _cm.camada.clearLayers(); });
 
@@ -7048,7 +7322,7 @@ function _vlCheckboxChange() {
   var checks = document.querySelectorAll('.vl-membro-chk:checked');
   var ids = Array.from(checks).map(function(c){ return c.value; });
   var membros = ids.map(function(id){
-    return DB.members.find(function(m){ return String(m.id) === String(id); });
+    return DB.todosMembros.find(function(m){ return String(m.id) === String(id); });
   }).filter(Boolean);
 
   var preview = document.getElementById('vl-membros-sel-preview');
@@ -7319,7 +7593,7 @@ function verAtaDetalhe(id) {
   var ata = DB.atas.find(function(a){ return a.id===id; });
   if (!ata) return;
   var auxNomes = (ata.auxiliares || []).map(function(aid) {
-    var m = DB.members.find(function(x){ return x.id===aid; });
+    var m = DB.todosMembros.find(function(x){ return x.id===aid; });
     return m ? m.nome : '';
   }).filter(Boolean);
 
@@ -7499,7 +7773,7 @@ function _desenharAtas(atas) {
   }
   el.innerHTML = sorted.map(function(ata) {
     var auxNomes = (ata.auxiliares || []).map(function(id) {
-      var m = DB.members.find(function(x){ return x.id===id; });
+      var m = DB.todosMembros.find(function(x){ return x.id===id; });
       return m ? m.nome.split(' ')[0] : '';
     }).filter(Boolean).join(', ') || '—';
     var tipoIcon = ata.assunto.tipo === 'texto' ? '✏️' : ata.assunto.tipo === 'doc' ? '📎' : '📷';
@@ -8315,7 +8589,7 @@ function recitConfirmarMembro(idx) {
     }
   } else if (val && val.indexOf('m_') === 0) {
     var id = val.substring(2);
-    var membro = DB.members.find(function(m){ return String(m.id) === String(id); });
+    var membro = DB.todosMembros.find(function(m){ return String(m.id) === String(id); });
     if (membro) { _recitOrdem[idx].membroId = 'm_' + membro.id; _recitOrdem[idx].membroNome = membro.nome; }
   } else {
     _recitOrdem[idx].membroId = null; _recitOrdem[idx].membroNome = '';
@@ -10858,11 +11132,40 @@ async function editarRecitativo(id) {
   });
 }
 
+async function _recitLancarPresenca(data, ordem) {
+  if (!data || todayISO() < data) return 0; // prévia
+  var ids = [];
+  (ordem || []).forEach(function(o) {
+    if (o.membroId == null || o.membroId === '') return;
+    var m = DB.members.find(function(x){ return String(x.id) === String(o.membroId); }); // só membros ativos (visitante não)
+    if (m && ids.indexOf(String(m.id)) < 0) ids.push(String(m.id));
+  });
+  if (!ids.length) return 0;
+  await _fbLoadMeetings();
+  var meetings = DB.meetings;
+  var doDia = meetings.filter(function(m){ return m.date === data; });
+  var mt = doDia.find(function(m){ return !m.isScheduled; }) || doDia[0];
+  if (!mt) { mt = { id: 'rj_' + Date.now(), date: data, present: [], title: 'Reunião de Jovens', isScheduled: false }; meetings.push(mt); }
+  mt.present = mt.present || [];
+  var novos = 0;
+  ids.forEach(function(id) {
+    if (mt.present.some(function(p){ return String(p) === id; })) return;
+    mt.present.push(isNaN(id) ? id : Number(id)); // mesmo formato da chamada
+    novos++;
+  });
+  if (!novos) return 0;
+  await _fbSaveMeetings(meetings);
+  ids.forEach(function(id){ _removerAutoVisitaMembro(id).catch(function(){}); }); // voltou: tira a visita por faltas
+  if (typeof renderHistorico === 'function') { try { renderHistorico(); renderStats(); } catch(e) {} }
+  registrarAtividade('lançou ' + novos + ' presença(s) pelo recitativo de ' + formatDate(data));
+  return novos;
+}
+
 async function salvarRecitativo() {
   var data = document.getElementById('recit-data').value;
   var auxEl  = document.getElementById('recit-auxiliar');
   var auxId  = auxEl ? auxEl.value : '';
-  var auxMembro = auxId ? DB.members.find(function(m){ return String(m.id)===String(auxId); }) : null;
+  var auxMembro = auxId ? DB.todosMembros.find(function(m){ return String(m.id)===String(auxId); }) : null;
   var auxNome = auxMembro ? auxMembro.nome : '';
   if (!data) { showToast('Informe a data da reunião!'); return; }
   if (_recitLivroIdx < 0) { showToast('Selecione um livro!'); return; }
@@ -10938,6 +11241,13 @@ async function salvarRecitativo() {
   }
 
   fecharModalRecitativo();
+
+  // Recitativo lançado NO DIA da reunião ou depois → quem recitou ganha presença.
+  // Lançado antes do dia é só uma prévia: não vale presença.
+  try {
+    var novasPres = await _recitLancarPresenca(data, ordemComTexto);
+    if (novasPres) showToast('✅ Recitativo salvo · ' + novasPres + ' presença' + (novasPres > 1 ? 's lançadas' : ' lançada'));
+  } catch(e) { console.warn('Presença automática do recitativo:', e); }
 
   // Re-renderiza imediatamente com os dados que acabamos de salvar
   if (_vsDetalheMeetingDate) _vsRenderDetalheNow(_vsDetalheMeetingDate);
@@ -11108,7 +11418,10 @@ async function gerarRelatorioPDF() {
         return count;
       });
       const tb = tm === 'visitantes' ? null : totalBase;
-      const pd = sd.map(p => tb > 0 ? Math.round((p / tb) * 100) : p);
+      const pd = sd.map((p, i) => {
+        const base = (tb && !memberIds) ? DB.members.filter(mb => membroValeEm(mb, meetings[i].date)).length : tb;
+        return base > 0 ? Math.round((p / base) * 100) : p;
+      });
       return { sd, pd, tb };
     }
 
@@ -11293,6 +11606,7 @@ async function gerarRelatorioPDF() {
 
       // ── Barra geral de presença ──────────────────────────────────────
       const totalMembros = memberIds ? memberIds.length : DB.members.filter(m => {
+        if (!membroValeEm(m, mt.date)) return false;
         if (presencaGeneroFiltro && presencaGeneroFiltro !== 'todos') return m.genero === presencaGeneroFiltro;
         return true;
       }).length;
@@ -11322,7 +11636,7 @@ async function gerarRelatorioPDF() {
       const pizzaGroups = [];
       gruposPresenca.forEach(grupo => {
         grupo.conts.forEach(c => {
-          const membsCont = DB.members.filter(m => m.continuacao === c && m.genero === grupo.genero &&
+          const membsCont = DB.members.filter(m => m.continuacao === c && m.genero === grupo.genero && membroValeEm(m, mt.date) &&
             (memberIds ? memberIds.includes(String(m.id)) : true));
           if (!membsCont.length) return;
           const presCont  = presentMembers.filter(m => m.continuacao === c && m.genero === grupo.genero).length;
@@ -12904,7 +13218,7 @@ const _GL_CONSULTAS = [
       if (g) ms = ms.filter(function(m){ return m.genero === g; });
       if (c) ms = ms.filter(function(m){ return String(m.continuacao) === c; });
       var faltas = /\b(faltou|faltaram|faltas|ausentes)\b/.test(t);
-      var lista = ms.filter(function(m){ return faltas ? !_glPresente(r, m) : _glPresente(r, m); });
+      var lista = ms.filter(function(m){ return faltas ? (!_glPresente(r, m) && membroValeEm(m, r.date)) : _glPresente(r, m); });
       var vis = ((DB.visitors || {})[String(r.id)] || []).length;
       return { texto: (faltas ? '❌ Faltaram' : '✅ Estiveram presentes') + ' na reunião de **' + _glFmt(data) + '**' + (g ? (g === 'F' ? ' (irmãs)' : ' (irmãos)') : '') + (c ? ' da ' + c + 'ª Cont.' : '') + ': **' + lista.length + '**' + (!faltas && vis ? ' + ' + vis + ' visitante(s)' : '') + '\n' + lista.map(function(m){ return '* ' + _glRotulo(m); }).join('\n') };
     } },
@@ -13285,21 +13599,21 @@ const _GL_INTENCOES = [
       var n = Math.max(1, Math.min(20, _glNumero(t, /\bultima reuniao\b|\bdomingo\b/.test(t) ? 1 : 3)));
       var rs = _glReunioesRealizadas().slice(0, n);
       if (!rs.length) return { texto: 'Ainda não há reuniões realizadas registradas.' };
-      var f = (DB.members || []).filter(function(m){ return m && rs.every(function(r){ return !_glPresente(r, m); }); });
+      var f = (DB.members || []).filter(function(m){ return m && rs.some(function(r){ return membroValeEm(m, r.date); }) && rs.every(function(r){ return !membroValeEm(m, r.date) || !_glPresente(r, m); }); });
       return { texto: (n === 1 ? 'Na reunião de ' : 'Em todas as últimas ' + rs.length + ' reuniões (') + rs.map(function(r){ return _glFmt(r.date); }).join(', ') + (n === 1 ? '' : ')') + ', **' + f.length + '** pessoa(s) faltaram:\n' + f.map(function(m){ return '* ' + _glRotulo(m); }).join('\n') }; } },
   { nome: 'frequencia', re: /\b(frequencia|presencas?|quantas vezes|veio quantas|assiduidade)\b/, nivel: 'logado', fazer: function(t) {
       if (/\b(mais|menos|ranking|melhores|piores)\b/.test(t)) return _GL_INTENCOES_POR_NOME.ranking(t);
       return _glComMembro(t, function(m) {
-        var rs = _glReunioesRealizadas(), pres = rs.filter(function(r){ return _glPresente(r, m); }), seguidas = 0;
+        var rs = _glReunioesRealizadas().filter(function(r){ return membroValeEm(m, r.date) || _glPresente(r, m); }), pres = rs.filter(function(r){ return _glPresente(r, m); }), seguidas = 0;
         for (var i = 0; i < rs.length; i++) { if (_glPresente(rs[i], m)) break; seguidas++; }
         return { texto: '**' + _glRotulo(m) + '**\n* **Presenças:** ' + pres.length + ' de ' + rs.length + ' reuniões (' + (rs.length ? Math.round(pres.length / rs.length * 100) : 0) + '%)\n* **Última presença:** ' + (pres[0] ? _glFmt(pres[0].date) : 'nunca') + '\n* **Faltas seguidas até hoje:** ' + seguidas,
           botoes: [{ rotulo: '📊 Ver relatório completo', fn: _glAbrir(function(){ showSection('membros'); abrirRelatorioMembro(m.id); }) }] };
       }, 'De quem você quer a frequência? Ex: **frequência do Filipe**.'); } },
   { nome: 'ranking', re: /\b(ranking|mais (presente|frequente|assidu|veio|vieram)|menos (presente|frequente|assidu|veio|vieram)|quem mais veio|quem menos veio)/, nivel: 'logado', fazer: function(t) {
       var rs = _glReunioesRealizadas(), menos = /\bmenos\b|\bpiores\b/.test(t), n = _glNumero(t, 10);
-      var arr = (DB.members || []).filter(Boolean).map(function(m){ return { m: m, p: rs.filter(function(r){ return _glPresente(r, m); }).length }; });
+      var arr = (DB.members || []).filter(Boolean).map(function(m){ return { m: m, p: rs.filter(function(r){ return _glPresente(r, m); }).length, de: rs.filter(function(r){ return membroValeEm(m, r.date); }).length }; });
       arr.sort(function(a, b){ return menos ? a.p - b.p : b.p - a.p; });
-      return { texto: (menos ? '**Menos presentes**' : '**Mais presentes**') + ' (' + rs.length + ' reuniões):\n' + arr.slice(0, n).map(function(x, i){ return '* ' + (i+1) + '. ' + _glRotulo(x.m) + ' — ' + x.p; }).join('\n') }; } },
+      return { texto: (menos ? '**Menos presentes**' : '**Mais presentes**') + ' (' + rs.length + ' reuniões):\n' + arr.slice(0, n).map(function(x, i){ return '* ' + (i+1) + '. ' + _glRotulo(x.m) + ' — ' + x.p + (x.de !== rs.length ? ' de ' + x.de : ''); }).join('\n') }; } },
   { re: /\b(aniversari|aniversario|niver|faz anos|fazem anos|completa anos)/, nivel: 'todos', fazer: function(t) {
       var mes = _glMes(t), hoje = _glHoje(), anon = !_glPode('logado');
       var dias = anon ? 7 : (/\bsemana\b/.test(t) ? 7 : /\bhoje\b/.test(t) ? 0 : 30);
@@ -13588,6 +13902,15 @@ function _glContinuaEndereco(anterior, novo) {
   if (/\b(de|da|do|das|dos|e|na|no|em|n|numero|com)$/.test(a)) return true;    // frase cortada no meio
   return false;
 }
+// Qualquer campo de texto: frase cortada no meio ("casa do" | "cooperador") ou pedaço
+// que começa ligado ao anterior ("do cooperador", "de jovens") continua o mesmo campo
+function _glContinuaTexto(k, anterior, novo) {
+  var a = _glNorm(anterior), n = _glNorm(novo);
+  if (!n) return false;
+  if (/^(de|da|do|das|dos|com|na|no|nas|nos|em|ao)\s/.test(n)) return true;
+  if (/(^|\s)(de|da|do|das|dos|e|com|na|no|nas|nos|em|pra|para|ao|a|o)$/.test(a)) return true;
+  return _GL_CAMPOS_ENDERECO.indexOf(k) >= 0 && _glContinuaEndereco(anterior, novo);
+}
 function _glEncaixar(f, original) {
   var campos = _glCamposDe(f.def), novos = [];
   var pendente = function(c){ return f.valores[c.k] === undefined && !f.pulados[c.k]; };
@@ -13680,8 +14003,8 @@ function _glFluxoResponder(original) {
   var pedacos = _glPedacosUteis(f, original);
   var soTexto = pedacos.length === 1 && pedacos[0].tipo === 'texto';
   // Continuação do endereço/local ditado em partes
-  if (soTexto && f.ultimoTexto && _GL_CAMPOS_ENDERECO.indexOf(f.ultimoTexto.k) >= 0 && Date.now() - f.ultimoEm < 7000 &&
-      _glContinuaEndereco(f.valores[f.ultimoTexto.k], pedacos[0].txt)) {
+  if (soTexto && f.ultimoTexto && Date.now() - f.ultimoEm < 7000 &&
+      _glContinuaTexto(f.ultimoTexto.k, f.valores[f.ultimoTexto.k], pedacos[0].txt)) {
     f.valores[f.ultimoTexto.k] = (f.valores[f.ultimoTexto.k] + ' ' + pedacos[0].txt.replace(/[.!?]+$/, '')).replace(/\s+([,.])/g, '$1');
     f.ultimoEm = Date.now();
     return _glFluxoProgresso([{ c: f.ultimoTexto }]);
@@ -13765,17 +14088,24 @@ function _glTentarIntencoes(t, original) {
 // enquanto ela só CONSULTA os dados do app — não cria, altera nem apaga nada.
 let _glorinhaHist = [];
 let _glorinhaPensando = false;
+// Ícone: ondas de voz azuis brilhando com um anel em órbita, fundo azul-noite
 const GLORINHA_AVATAR = '<svg viewBox="0 0 64 64" width="100%" height="100%" aria-hidden="true">' +
-  '<defs><linearGradient id="glorinhaFundo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset="1" stop-color="#f9a8d4"/></linearGradient></defs>' +
-  '<circle cx="32" cy="32" r="32" fill="url(#glorinhaFundo)"/>' +
-  '<path d="M14 36c0-14 8-23 18-23s18 9 18 23v18H14z" fill="#5b3a29"/>' +
-  '<path d="M17 64c1-8 7-12 15-12s14 4 15 12z" fill="#6366f1"/>' +
-  '<ellipse cx="32" cy="35" rx="12" ry="13" fill="#f5cba7"/>' +
-  '<path d="M19 32c2-9 8-13 14-13 7 0 12 5 13 12-6-1-11-4-14-8-3 5-8 8-13 9z" fill="#5b3a29"/>' +
-  '<circle cx="27" cy="36" r="1.7" fill="#2d1b10"/><circle cx="37" cy="36" r="1.7" fill="#2d1b10"/>' +
-  '<circle cx="24.5" cy="40" r="2.2" fill="#f9a8b8" opacity=".75"/><circle cx="39.5" cy="40" r="2.2" fill="#f9a8b8" opacity=".75"/>' +
-  '<path d="M28 42q4 3.5 8 0" stroke="#b5523b" stroke-width="1.7" fill="none" stroke-linecap="round"/>' +
-  '<path d="M51 9l1.6 3.8L56.5 14.4l-3.9 1.6L51 19.9l-1.6-3.9L45.5 14.4l3.9-1.6z" fill="#fff"/>' +
+  '<defs>' +
+    '<radialGradient id="glFundo" cx="50%" cy="45%" r="70%"><stop offset="0" stop-color="#0c1f63"/><stop offset="1" stop-color="#020617"/></radialGradient>' +
+    '<linearGradient id="glBarra" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset=".15" stop-color="#67e8f9"/><stop offset="1" stop-color="#2563eb"/></linearGradient>' +
+    '<linearGradient id="glAnel" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#1d4ed8"/><stop offset=".65" stop-color="#7dd3fc"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>' +
+    '<filter id="glBrilho" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="1.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>' +
+  '</defs>' +
+  '<circle cx="32" cy="32" r="32" fill="url(#glFundo)"/>' +
+  '<path d="M9 34A23 9 0 0 1 55 34" transform="rotate(-24 32 34)" fill="none" stroke="url(#glAnel)" stroke-width="1.4" stroke-linecap="round" opacity=".5"/>' +
+  '<g filter="url(#glBrilho)" fill="url(#glBarra)">' +
+    '<rect x="17.6" y="26.5" width="4.4" height="10" rx="2.2"/>' +
+    '<rect x="23.8" y="22" width="4.4" height="19" rx="2.2"/>' +
+    '<rect x="29.8" y="15" width="4.4" height="33" rx="2.2"/>' +
+    '<rect x="35.8" y="22" width="4.4" height="19" rx="2.2"/>' +
+    '<rect x="42" y="26.5" width="4.4" height="10" rx="2.2"/>' +
+  '</g>' +
+  '<path d="M9 34A23 9 0 0 0 55 34" transform="rotate(-24 32 34)" fill="none" stroke="url(#glAnel)" stroke-width="2.3" stroke-linecap="round" filter="url(#glBrilho)"/>' +
   '</svg>';
 
 function abrirGlorinha() {
@@ -14149,6 +14479,7 @@ function glorinhaMicrofone() {
 // em GLORINHA_ESPERA_MS, desiste.
 const GLORINHA_PAUSA_MS = 2000;
 const GLORINHA_ESPERA_MS = 8000;
+const GLORINHA_PAUSA_DITADO_MS = 1500; // ditado: silêncio que separa um campo do outro
 // No Android, o reconhecimento do Google se encerra sozinho na primeira pausa
 // curta (ignora o "contínuo"). Por isso cada "sessão" que termina ANTES dos 2 s
 // de silêncio é religada na hora, juntando o texto — só envia de verdade depois
@@ -14173,6 +14504,7 @@ function _glorinhaOuvirNoAparelho() {
   var encerrarEm = function(ms){ clearTimeout(cronometro); cronometro = setTimeout(function(){ ctl.stop(); }, ms); };
   var finalizar = function() {
     clearTimeout(cronometro);
+    if (bufDitado && !cancelado) mandarDitado(); // o que ficou guardado do ditado
     if (_glorinhaReconhecimento === ctl) _glorinhaReconhecimento = null;
     _glorinhaSetOuvindo(false);
     _glOuvidoReabrirJa(); // o ouvido do "Glorinha" volta na hora, pra pegar uma interrupção desde o início da resposta
@@ -14184,19 +14516,32 @@ function _glorinhaOuvirNoAparelho() {
     else if (_glFluxo) showToast('⏸️ Ditado pausado — toque no 🎤 (ou diga "Glorinha") para continuar');
     else showToast('Não ouvi nada 🙉 Toque no 🎤 e fale de novo' + (erro ? ' (código: ' + erro + ')' : ''));
   };
-  // Modo comando (ditado): cada trecho que o reconhecimento fecha numa pausa vai
-  // direto para o próximo campo, e o microfone continua até completar ou "pronto"
-  var enviadoNaSessao = '';
+  // Modo comando (ditado): o reconhecimento fecha pedaços em pausas BEM curtas
+  // ("casa" | "do cooperador" | "de jovens"). Os pedaços são juntados e só vão
+  // pro campo depois de GLORINHA_PAUSA_DITADO_MS sem fala — aí sim é outro campo.
+  var enviadoNaSessao = '', bufDitado = '', cronDitado = null;
+  var mandarDitado = function() {
+    clearTimeout(cronDitado); cronDitado = null;
+    var b = bufDitado.replace(/\s+/g, ' ').trim(); bufDitado = '';
+    if (!b) return;
+    input.value = '';
+    _glorinhaFalarResposta = true;
+    // "…de jovens pronto" (sem pausa antes do pronto): o texto vai pro campo e o "pronto" é comando
+    var cmd = b.match(/^(.*\S)\s+(pronto|terminei|pr[oó]ximo|cancelar|cancela)[.!]?$/i);
+    if (cmd) { glorinhaEnviar(cmd[1]); if (_glFluxo) glorinhaEnviar(cmd[2]); }
+    else glorinhaEnviar(b);
+    if (!_glFluxo) { cancelado = true; ctl.stop(); } // o comando terminou (abriu a tela) ou foi cancelado
+  };
+  var esperarDitado = function() { clearTimeout(cronDitado); cronDitado = setTimeout(mandarDitado, GLORINHA_PAUSA_DITADO_MS); };
   var enviarTrecho = function(trecho) {
-    // alguns Androids repetem o texto acumulado: manda só a parte nova
+    // alguns Androids repetem o texto acumulado: guarda só a parte nova
     var novo = trecho;
     if (enviadoNaSessao && _glNorm(trecho).indexOf(_glNorm(enviadoNaSessao)) === 0) novo = trecho.slice(enviadoNaSessao.length).trim();
     enviadoNaSessao = trecho;
     if (!novo) return;
-    input.value = '';
-    _glorinhaFalarResposta = true;
-    glorinhaEnviar(novo);
-    if (!_glFluxo) { cancelado = true; ctl.stop(); } // o comando terminou (abriu a tela) ou foi cancelado
+    bufDitado += ' ' + novo;
+    input.value = bufDitado.trim();
+    esperarDitado();
   };
   var sessao = function() {
     rec = new SR();
@@ -14213,7 +14558,8 @@ function _glorinhaOuvirNoAparelho() {
         if (_glFluxo) enviarTrecho(trecho); else juntar(trecho);
       }
       ultimaFala = Date.now();
-      input.value = textoAtual();
+      if (_glFluxo) { if (bufDitado && parcial) esperarDitado(); input.value = (bufDitado + ' ' + parcial).trim(); } // ainda falando: espera mais
+      else input.value = textoAtual();
       encerrarEm(_glFluxo ? 20000 : GLORINHA_PAUSA_MS); // ditado: espera o próximo campo; normal: 2 s de silêncio
     };
     rec.onerror = function(e) { erro = e.error; };

@@ -647,6 +647,11 @@
         localStorage.setItem('rj_visitas_comuns', JSON.stringify(arr));
         if (typeof renderVisitasComuns === 'function') { try { renderVisitasComuns(); } catch(e){} }
       });
+      window._fbOnValue(window._fbRef(window._rtdb, 'app/comuns_status'), (snap) => {
+        const val = snap.exists() ? snap.val() : {};
+        localStorage.setItem('rj_comuns_status', JSON.stringify(val && typeof val === 'object' ? val : {}));
+        if (typeof cmRedesenhar === 'function') { try { cmRedesenhar(); } catch(e){} }
+      });
       window._fbOnValue(window._fbRef(window._rtdb, 'app/meetings'), (snap) => {
         const val = snap.exists() ? snap.val() : [];
         const arr = (Array.isArray(val) ? val : Object.values(val)).filter(Boolean);
@@ -846,6 +851,8 @@
   .btn-primary { background: var(--primary); color: #fff; }
   .btn-primary:hover { background: var(--primary-dark); }
   .btn-secondary { background: var(--bg); color: var(--primary); border: 1.5px solid var(--primary-light); }
+  .cm-popup .leaflet-popup-content-wrapper { padding: 0; overflow: hidden; border-radius: 12px; }
+  .cm-popup .leaflet-popup-content { margin: 0; width: auto !important; min-width: 230px; }
   .btn-danger { background: var(--danger); color: #fff; }
   .btn-sm { padding: 6px 12px; font-size: .78rem; border-radius: 8px; }
   .btn-full { width: 100%; }
@@ -2043,8 +2050,17 @@
   <!-- Submenu Para Comuns -->
   <div class="submenu" id="sub-visitas-comuns">
     <div class="submenu-title"><button class="back-btn" onclick="closeVisitasSubmenu()">← Voltar</button> 🏘 Para Comuns</div>
+    <div class="card" style="padding:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <button class="btn btn-sm btn-secondary" id="cm-btn-local" onclick="cmMinhaLocalizacao()" style="flex:1;min-width:140px;">📍 Minha localização</button>
+        <button class="btn btn-sm btn-primary" id="cm-btn-atualizar" onclick="cmAtualizar()" style="flex:1;min-width:140px;">🔄 Atualizar</button>
+      </div>
+      <div id="cm-mapa" style="height:62vh;min-height:320px;border-radius:12px;overflow:hidden;border:1px solid var(--border);background:var(--bg);"></div>
+      <div id="cm-legenda" style="display:flex;gap:12px;flex-wrap:wrap;font-size:.75rem;margin-top:8px;color:var(--text);"></div>
+      <div id="cm-info" style="font-size:.72rem;color:var(--text-muted);margin-top:6px;line-height:1.4;"></div>
+    </div>
     <div class="card">
-      <div class="card-title" style="font-size:.85rem;margin-bottom:10px;">✅ Marque as comuns já visitadas</div>
+      <div class="card-title" style="font-size:.85rem;margin-bottom:10px;">✅ Comuns que nos visitaram — marque as que já visitamos</div>
       <div id="visitas-comuns-list"></div>
     </div>
   </div>
@@ -6506,7 +6522,7 @@ function openVisitasSubmenu(type) {
   document.getElementById('visitas-main-menu').style.display = 'none';
   document.querySelectorAll('#sec-visitas .submenu').forEach(s=>s.classList.remove('active'));
   document.getElementById('sub-visitas-' + type).classList.add('active');
-  if (type === 'comuns')   renderVisitasComuns();
+  if (type === 'comuns')   { renderVisitasComuns(); cmAbrir(); }
   if (type === 'locais')   renderVisitasLocais();
   if (type === 'amarcar')  renderVisitasAMarcar();
 }
@@ -6764,7 +6780,234 @@ async function toggleVisitaComum(comum, checked) {
   localStorage.setItem('rj_visitas_comuns', JSON.stringify(list));
   if (window.FB && window.FB.write) window.FB.write('app/visitas_comuns', list).catch(e=>console.warn(e));
   renderVisitasComuns();
+  cmRedesenhar();
 }
+
+// ── Mapa das comuns ──
+// As casas de oração da cidade + das cidades que fazem divisa vêm da função
+// "comuns" (páginas públicas do congregacoes.com.br) e ficam SÓ NA MEMÓRIA deste
+// aparelho: nada vai pro banco nem pro armazenamento do celular, e some ao sair
+// do app. O que fica guardado no banco (app/comuns_status) é só a situação de
+// cada comum (não visitada / devendo visita / já visitamos), pra todos verem.
+const CM_LEAFLET = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
+const CM_INICIO = [-23.4663, -46.3024]; // CCB Parque Macedo — quando a localização não está liberada
+const CM_STATUS = {
+  nao:      { cor: '#64748b', nome: 'Não visitado' },
+  devendo:  { cor: '#f59e0b', nome: 'Devendo visita' },
+  visitado: { cor: '#16a34a', nome: 'Já visitamos' },
+};
+const CM_NOSSA = 'BR-21-1244'; // CCB Parque Macedo: a nossa comum (pino roxo, sem situação)
+let _cm = { mapa: null, camada: null, eu: null, dados: null, carregando: false, leaflet: null, centroCarregado: null };
+
+function _cmNorm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/^(ccb|comum|congregacao)\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+function _cmEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+function _cmRegistro() { try { return JSON.parse(localStorage.getItem('rj_comuns_status') || '{}') || {}; } catch(e) { return {}; } }
+
+// Situação da comum: a marcada no app vale; senão compara pelo nome com as comuns
+// já visitadas (lista antiga) e com as comuns dos visitantes (= estamos devendo).
+// Nome repetido em várias cidades ("Centro"...): o nome sozinho só vale pra cidade principal.
+function cmStatus(c) {
+  var reg = _cmRegistro()[c.codigo];
+  if (reg && CM_STATUS[reg.status]) return reg.status;
+  var n = _cmNorm(c.nome), d = _cm.dados;
+  var repetido = d && d.comuns.filter(function(x){ return _cmNorm(x.nome) === n; }).length > 1;
+  if (repetido && d && c.cidade !== d.cidade) return 'nao';
+  if (DB.visitasComuns.some(function(x){ return _cmNorm(x) === n; })) return 'visitado';
+  if (getAllComuns().some(function(x){ return _cmNorm(x) === n; })) return 'devendo';
+  return 'nao';
+}
+
+async function cmMarcarStatus(codigo, status) {
+  if (typeof _glPode === 'function' && !_glPode('logado')) { showToast('🔐 Entre na sua conta para marcar'); return; }
+  var c = _cm.dados && _cm.dados.comuns.find(function(x){ return x.codigo === codigo; });
+  if (!c || !CM_STATUS[status]) return;
+  var reg = _cmRegistro();
+  try { if (window.FB && window.FB.read) { var v = await window.FB.read('app/comuns_status'); if (v && typeof v === 'object') reg = v; } } catch(e) {}
+  reg[codigo] = { status: status, nome: c.nome, endereco: c.endereco, cidade: c.cidade, uf: c.uf, atualizado: new Date().toISOString(), por: _userName || '' };
+  localStorage.setItem('rj_comuns_status', JSON.stringify(reg));
+  if (window.FB && window.FB.write) window.FB.write('app/comuns_status', reg).catch(function(e){ console.warn(e); showToast('⚠️ Não consegui salvar'); });
+  cmRedesenhar(); // o balão continua aberto, já com a cor nova
+  showToast((status === 'visitado' ? '✅ ' : status === 'devendo' ? '🟠 ' : '⚪ ') + c.nome + ': ' + CM_STATUS[status].nome);
+}
+
+function _cmLeaflet() {
+  if (window.L && window.L.map) return Promise.resolve();
+  if (_cm.leaflet) return _cm.leaflet;
+  _cm.leaflet = new Promise(function(res, rej) {
+    var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = CM_LEAFLET + 'leaflet.min.css'; document.head.appendChild(l);
+    var s = document.createElement('script'); s.src = CM_LEAFLET + 'leaflet.min.js';
+    s.onload = res; s.onerror = function(){ _cm.leaflet = null; rej(new Error('leaflet')); };
+    document.head.appendChild(s);
+  });
+  return _cm.leaflet;
+}
+function _cmPino(cor) {
+  return L.divIcon({ className: '', iconSize: [26, 34], iconAnchor: [13, 33], popupAnchor: [0, -30],
+    html: '<svg width="26" height="34" viewBox="0 0 26 34"><path d="M13 1C6.4 1 1 6.3 1 12.8 1 21.6 13 33 13 33s12-11.4 12-20.2C25 6.3 19.6 1 13 1z" fill="' + cor + '" stroke="#fff" stroke-width="2"/><circle cx="13" cy="12.6" r="4.6" fill="#fff"/></svg>' });
+}
+
+// Abre a tela: carrega o mapa (uma vez) e as comuns de onde a pessoa está
+async function cmAbrir() {
+  var div = document.getElementById('cm-mapa');
+  if (!div) return;
+  if (!_cm.mapa) {
+    div.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:.85rem;">🗺️ Carregando o mapa…</div>';
+    try { await _cmLeaflet(); }
+    catch(e) { div.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:.85rem;">📵 Não consegui carregar o mapa. Confira a internet e abra de novo.</div>'; return; }
+    div.innerHTML = '';
+    _cm.mapa = L.map(div, { zoomControl: true, attributionControl: true }).setView(CM_INICIO, 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(_cm.mapa);
+    _cm.camada = L.layerGroup().addTo(_cm.mapa);
+    _cm.mapa.on('moveend', _cmBotaoAtualizar);
+  }
+  setTimeout(function(){ _cm.mapa.invalidateSize(); }, 60);
+  cmLegenda();
+  if (_cm.pendente) { var p = _cm.pendente; _cm.pendente = null; return cmCarregar(p.lat, p.lng, p.zoom); }
+  if (!_cm.dados && !_cm.carregando) {
+    var pos = await _cmMinhaPosicao();
+    cmCarregar(pos ? pos[0] : CM_INICIO[0], pos ? pos[1] : CM_INICIO[1], 12);
+  }
+}
+function _cmMinhaPosicao() {
+  return new Promise(function(res) {
+    if (!navigator.geolocation) return res(null);
+    navigator.geolocation.getCurrentPosition(function(p){
+      var ll = [p.coords.latitude, p.coords.longitude];
+      if (_cm.mapa) {
+        if (_cm.eu) _cm.eu.setLatLng(ll);
+        else _cm.eu = L.circleMarker(ll, { radius: 7, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(_cm.mapa).bindTooltip('Você está aqui');
+      }
+      res(ll);
+    }, function(){ res(null); }, { enableHighAccuracy: true, timeout: 9000, maximumAge: 120000 });
+  });
+}
+async function cmMinhaLocalizacao() {
+  var pos = await _cmMinhaPosicao();
+  if (!pos) { showToast('📍 Libere a localização do aparelho para o app'); return; }
+  cmCarregar(pos[0], pos[1], 13);
+}
+// "Atualizar": apaga as comuns da área antiga e carrega as do centro do mapa
+function cmAtualizar() {
+  if (!_cm.mapa) return cmAbrir();
+  var c = _cm.mapa.getCenter();
+  cmCarregar(c.lat, c.lng, _cm.mapa.getZoom());
+}
+function _cmBotaoAtualizar() {
+  var b = document.getElementById('cm-btn-atualizar');
+  if (!b || !_cm.mapa || !_cm.centroCarregado) return;
+  var longe = _cm.mapa.distance(_cm.mapa.getCenter(), _cm.centroCarregado) > 4000;
+  b.style.animation = longe ? 'pulse-green 1.4s infinite' : '';
+  b.textContent = longe ? '🔄 Atualizar esta área' : '🔄 Atualizar';
+}
+
+async function cmCarregar(lat, lng, zoom) {
+  if (_cm.carregando) return;
+  _cm.carregando = true;
+  _cm.dados = null; // apaga os dados antigos antes de buscar os novos
+  if (_cm.camada) _cm.camada.clearLayers();
+  var info = document.getElementById('cm-info'), btn = document.getElementById('cm-btn-atualizar');
+  if (info) info.textContent = '⏳ Procurando a cidade e as cidades vizinhas…';
+  if (btn) btn.disabled = true;
+  if (_cm.mapa) _cm.mapa.setView([lat, lng], zoom || _cm.mapa.getZoom());
+  try {
+    var r = await cmBuscar({ lat: lat, lng: lng });
+    _cm.dados = r;
+    _cm.centroCarregado = L.latLng(lat, lng);
+    cmRedesenhar();
+  } catch(e) {
+    if (info) info.textContent = '⚠️ ' + (e.message || 'Não consegui carregar as comuns.') + ' Toque em Atualizar para tentar de novo.';
+  }
+  _cm.carregando = false;
+  if (btn) btn.disabled = false;
+  _cmBotaoAtualizar();
+}
+// Chama a função do Supabase (usada pelo mapa e pela Glorinha). Não guarda nada.
+async function cmBuscar(corpo) {
+  if (!navigator.onLine || !window._supabase) throw new Error('Sem internet.');
+  var chamada = window._supabase.functions.invoke('comuns', { body: corpo });
+  var limite = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('Demorou demais.')); }, 45000); });
+  var r = await Promise.race([chamada, limite]);
+  if (r.error) throw new Error('Não consegui buscar as comuns.');
+  if (!r.data || !r.data.ok) throw new Error((r.data && r.data.erro) || 'Não consegui buscar as comuns.');
+  return r.data;
+}
+
+function cmLegenda() {
+  var el = document.getElementById('cm-legenda');
+  if (!el) return;
+  var cont = { nao: 0, devendo: 0, visitado: 0 };
+  if (_cm.dados) _cm.dados.comuns.forEach(function(c){ if (c.codigo !== CM_NOSSA) cont[cmStatus(c)]++; });
+  el.innerHTML = Object.keys(CM_STATUS).map(function(k) {
+    return '<span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:11px;height:11px;border-radius:50%;background:' + CM_STATUS[k].cor + ';display:inline-block;"></span>' + CM_STATUS[k].nome + (_cm.dados ? ' (' + cont[k] + ')' : '') + '</span>';
+  }).join('');
+}
+function cmRedesenhar() {
+  cmLegenda();
+  if (!_cm.mapa || !_cm.camada || !_cm.dados) return;
+  var aberto = _cm.mapa._popup && _cm.mapa.hasLayer(_cm.mapa._popup) ? _cm.mapa._popup._cmCodigo : null;
+  _cm.camada.clearLayers();
+  var pinos = { nossa: _cmPino('#6366f1') };
+  ['nao', 'devendo', 'visitado'].forEach(function(k){ pinos[k] = _cmPino(CM_STATUS[k].cor); });
+  _cm.dados.comuns.forEach(function(c) {
+    var m = L.marker([c.lat, c.lng], { icon: pinos[c.codigo === CM_NOSSA ? 'nossa' : cmStatus(c)], title: c.nome, codigo: c.codigo, zIndexOffset: c.codigo === CM_NOSSA ? 1000 : 0 });
+    m.bindPopup(function(){ return _cmPopup(c); }, { maxWidth: 270, minWidth: 230, className: 'cm-popup', closeButton: false });
+    m.on('popupopen', function(e){ e.popup._cmCodigo = c.codigo; });
+    m.addTo(_cm.camada);
+    if (aberto === c.codigo) setTimeout(function(){ m.openPopup(); }, 0);
+  });
+  var d = _cm.dados, info = document.getElementById('cm-info');
+  if (info) {
+    var outras = d.cidades.filter(function(x){ return !x.principal; });
+    info.innerHTML = '🏘 <b>' + _cmEsc(d.cidade) + '</b>' + (outras.length ? ' e as cidades vizinhas: ' + outras.map(function(x){ return _cmEsc(x.nome) + (x.total === null ? ' (falhou)' : ''); }).join(', ') : '') +
+      ' — <b>' + d.comuns.length + '</b> comuns. Mexeu no mapa? Toque em <b>Atualizar</b>.<br>Fonte: congregacoes.com.br (site colaborativo, não oficial — pode ter diferenças).';
+  }
+}
+function _cmPopup(c) {
+  var st = cmStatus(c), cor = CM_STATUS[st].cor;
+  var end = [c.endereco, c.bairro && c.endereco.indexOf(c.bairro) < 0 ? c.bairro : '', c.cidade + '/' + c.uf].filter(Boolean).join(' – ');
+  var maps = 'https://www.google.com/maps/search/?api=1&query=' + c.lat + ',' + c.lng;
+  var porDia = {};
+  (c.cultos || []).forEach(function(x){ (porDia[x.dia] = porDia[x.dia] || []).push(x.hora); });
+  var cultos = Object.keys(porDia).map(function(dia){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0;"><span>' + _cmEsc(dia) + '</span><b>' + _cmEsc(porDia[dia].join(' e ')) + '</b></div>'; }).join('') ||
+    '<div style="color:#64748b;">Dias de culto não informados</div>';
+  var cod = _cmEsc(c.codigo);
+  var opcoes = Object.keys(CM_STATUS).map(function(k){
+    return '<button onclick="cmMarcarStatus(\'' + cod + '\',\'' + k + '\')" style="flex:1;border:2px solid ' + (k === st ? '#fff' : 'transparent') + ';background:' + CM_STATUS[k].cor + ';color:#fff;border-radius:8px;padding:5px 2px;font-size:.66rem;font-weight:700;cursor:pointer;">' + CM_STATUS[k].nome + '</button>';
+  }).join('');
+  var cabecalho = c.codigo === CM_NOSSA
+    ? '<div style="background:#6366f1;color:#fff;padding:9px 14px;font-size:.75rem;font-weight:800;">🏠 Nossa comum</div><div></div>'
+    : null;
+  return '<div style="font-family:inherit;">' + (cabecalho ||
+    '<div onclick="var o=this.nextElementSibling;o.style.display=o.style.display===\'flex\'?\'none\':\'flex\'" style="background:' + cor + ';color:#fff;padding:9px 14px;font-size:.75rem;font-weight:800;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">' +
+      '<span>' + CM_STATUS[st].nome + '</span><span style="font-weight:600;opacity:.9;">alterar ▾</span></div>' +
+    '<div style="display:none;gap:4px;padding:6px 8px;background:#f1f5f9;">' + opcoes + '</div>') +
+    '<div style="padding:10px 14px 12px;color:#0f172a;">' +
+      '<div style="font-size:1rem;font-weight:800;margin-bottom:6px;">' + _cmEsc(c.nome) + '</div>' +
+      '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;">' +
+        '<div style="flex:1;font-size:.8rem;line-height:1.35;color:#334155;">' + _cmEsc(end) + '</div>' +
+        '<a href="' + maps + '" target="_blank" rel="noopener" style="flex-shrink:0;background:#2563eb;color:#fff;text-decoration:none;border-radius:8px;padding:6px 8px;font-size:.7rem;font-weight:700;white-space:nowrap;">🗺️ Abrir mapa</a>' +
+      '</div>' +
+      '<div style="font-size:.7rem;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px;">Cultos</div>' +
+      '<div style="font-size:.82rem;">' + cultos + '</div>' +
+    '</div></div>';
+}
+// Glorinha → "ver no mapa": abre a tela e carrega a área desse ponto
+function cmIrPara(lat, lng, codigo) {
+  var zoom = codigo ? 16 : 13;
+  var abrir = function() {
+    if (!codigo || !_cm.camada) return;
+    _cm.camada.eachLayer(function(m){ if (m.options.codigo === codigo) m.openPopup(); });
+  };
+  var perto = _cm.dados && _cm.centroCarregado && _cm.mapa && _cm.mapa.distance(_cm.centroCarregado, [lat, lng]) < 15000;
+  if (!perto) _cm.pendente = { lat: lat, lng: lng, zoom: zoom }; // cmAbrir carrega essa área
+  showSection('visitas');
+  openVisitasSubmenu('comuns');
+  if (perto) { _cm.mapa.setView([lat, lng], zoom); setTimeout(abrir, 300); return; }
+  var espera = setInterval(function(){ if (!_cm.pendente && _cm.dados && !_cm.carregando) { clearInterval(espera); setTimeout(abrir, 200); } }, 400);
+  setTimeout(function(){ clearInterval(espera); }, 60000);
+}
+// Saiu do app: apaga tudo que foi carregado (só a situação de cada comum fica no banco)
+window.addEventListener('pagehide', function(){ _cm.dados = null; if (_cm.camada) _cm.camada.clearLayers(); });
 
 // ── Locais ──
 function fecharModalVisitaDetalhe() {
@@ -12464,6 +12707,10 @@ function _glLocal(original) { var m = String(original).match(/\s(?:na|no|em)\s+(
 // O reconhecimento de voz às vezes troca palavras ("recitou" → "ressuscitou").
 // Antes de interpretar, corrige as trocas conhecidas e converte números falados
 // em algarismos SÓ onde são data/hora/continuação (pra não estragar títulos).
+// Jeitos que "Glorinha" sai no reconhecimento (Google e o ouvido local). "Glória"
+// sozinha NÃO conta (é nome comum e aparece em hino/oração).
+const GL_VARIANTES = 'glorinha|gl[oó]rinha|g?loirinha|g?lourinha|loirinho|florinha|florinho|lorinha|lorinho|gorinha|glorinho|clorinha|grolinha|glorinia|gloriinha|gloria?inha|' +
+  'gl[oó]ria nha|gl[oó]ria inha|gl[oó]ria linha|glo rinha|glor inha|gl[oó]ri nha|glorynha|glorhinha|glorinja|glorinhá';
 const _GL_TROCAS = [
   // "recitou" e família — as trocas mais comuns do reconhecimento de voz
   [/\bressuscit(ou|aram|ar|a|ando|ativo|ativos)\b/gi, function(m, s){ return 'recit' + s; }],
@@ -12489,7 +12736,7 @@ const _GL_TROCAS = [
   [/\bcomanda\b/gi, 'comando'], [/\bco mando\b/gi, 'comando'],
   [/\bfreqüência\b/gi, 'frequência'], [/\bfrequencia\b/gi, 'frequência'],
   [/\baniversa rio\b/gi, 'aniversário'],
-  [/\b(florinha|lorinha|loirinha|gorinha|glorinho|gloria nha|glória nha)\b/gi, 'Glorinha'],
+  [new RegExp('(^|\\s)(' + GL_VARIANTES + ')(?=\\s|$|[,.!?:;])', 'gi'), '$1Glorinha'],
 ];
 const _GL_NUM = { zero:0, um:1, uma:1, primeiro:1, primeira:1, dois:2, duas:2, segundo:2, segunda:2, tres:3, terceiro:3, terceira:3, quatro:4, quarto:4, quarta:4, cinco:5, quinto:5, quinta:5,
   seis:6, sete:7, oito:8, nove:9, dez:10, onze:11, doze:12, treze:13, quatorze:14, catorze:14, quinze:15, dezesseis:16, dezessete:17, dezoito:18, dezenove:19,
@@ -12547,7 +12794,7 @@ function _glCorrigirFala(original) {
 // Segunda tentativa: troca palavras desconhecidas pela palavra-chave mais parecida
 const _GL_CHAVES = ['recitou','recitaram','recitativo','recitativos','versinho','versinhos','aniversario','aniversarios','frequencia','presenca','presencas','continuacao',
   'visita','visitas','evento','eventos','lancamento','lancamentos','faltou','faltaram','faltas','reuniao','reunioes','membro','membros','auxiliar','auxiliares',
-  'comando','marcar','cadastrar','cadastra','agenda','visitantes','telefone','endereco','relatorio','presentes','pular','cancelar','pronto'];
+  'comando','marcar','cadastrar','cadastra','agenda','visitantes','telefone','endereco','relatorio','presentes','pular','cancelar','pronto','comuns','cultos'];
 function _glAproximar(t) {
   if (typeof _distanciaEdicao !== 'function') return t;
   var mudou = false;
@@ -12773,6 +13020,84 @@ const _GL_CONSULTAS = [
     } },
 ];
 
+// ── Comuns (casas de oração): cultos por cidade e dia, situação das visitas ──
+const _GL_CM_PARA = ['que','tem','tera','teria','ha','havera','existe','existem','com','culto','cultos','rjm','hoje','amanha','agora','depois','domingo','segunda','terca','quarta','quinta','sexta','sabado','feira',
+  'proximo','proxima','que','vem','quais','qual','onde','horario','horarios','a','as','o','os','e','pra','para','mim','me','por','favor','ai','la','noite','tarde','manha','comum','comuns','casa','casas','oracao','mapa','sp'];
+const _GL_CM_UFS = ['ac','al','ap','am','ba','ce','df','es','go','ma','mt','ms','mg','pa','pb','pr','pe','pi','rj','rn','rs','ro','rr','sc','sp','se','to'];
+// "comuns que têm culto hoje em Itaquaquecetuba" → Itaquaquecetuba; "comuns de Ferraz de Vasconcelos" → Ferraz de Vasconcelos
+function _glCidadeComuns(t) {
+  var p = t.replace(/[,.!?]/g, ' ').split(/\s+/).filter(Boolean);
+  var uf = null;
+  if (p.length && _GL_CM_UFS.indexOf(p[p.length - 1]) >= 0 && p.length > 2) uf = p.pop().toUpperCase();
+  var depois = function(i) {
+    var nome = [];
+    for (var j = i + 1; j < p.length && _GL_CM_PARA.indexOf(p[j]) < 0; j++) nome.push(p[j]);
+    while (nome.length && /^(de|da|do|das|dos)$/.test(nome[nome.length - 1])) nome.pop();
+    return nome.length && nome.join(' ').length >= 3 ? nome.join(' ') : null;
+  };
+  var achado = null;
+  for (var i = p.length - 1; i >= 0 && !achado; i--) if (/^(em|no|na|nos|nas)$/.test(p[i])) achado = depois(i);       // "em X": o último vale
+  for (var k = 0; k < p.length && !achado; k++) if (/^(de|da|do|das|dos)$/.test(p[k])) achado = depois(k);           // "comuns de X": o primeiro vale
+  return achado ? { cidade: achado, uf: uf } : (uf ? { cidade: null, uf: uf } : null);
+}
+const _GL_CM_DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+function _glDiaComuns(t) {
+  var hoje = new Date().getDay();
+  if (/depois de amanha/.test(t)) return { i: (hoje + 2) % 7, rot: 'depois de amanhã' };
+  if (/\bamanha\b/.test(t)) return { i: (hoje + 1) % 7, rot: 'amanhã' };
+  if (/\b(hoje|agora|hj)\b/.test(t)) return { i: hoje, rot: 'hoje', hoje: true };
+  var m = t.match(/\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)\b/);
+  if (m) { var i = _GL_DIAS.indexOf(m[1]); return { i: i, rot: i === hoje ? 'hoje' : (i === 0 || i === 6 ? 'no ' : 'na ') + _GL_CM_DIAS[i].toLowerCase(), hoje: i === hoje }; }
+  return null;
+}
+function _glComunsMapa(c) { return { rotulo: '🗺️ Ver no mapa', fn: function(){ return { texto: 'Abrindo o mapa das comuns 🗺️', depois: _glAbrir(function(){ cmIrPara(c.lat, c.lng); }) }; } }; }
+async function _glComunsCultos(t) {
+  var lugar = _glCidadeComuns(t) || {}, dia = _glDiaComuns(t), rjm = /\b(rjm|reuniao de jovens)\b/.test(t);
+  var cidade = lugar.cidade || (_cm.dados && _cm.dados.cidade) || 'Itaquaquecetuba';
+  var uf = lugar.uf || (_cm.dados && !lugar.cidade && _cm.dados.uf) || 'SP';
+  var d;
+  try { d = await cmBuscar({ cidade: cidade, uf: uf, soCidade: true }); }
+  catch(e) { return { texto: '😕 ' + e.message + ' Não consegui buscar as comuns de ' + cidade + '.' }; }
+  if (!d.comuns.length) return { texto: 'Não achei comuns em **' + cidade + '/' + uf + '** 🤔 Confere o nome da cidade?', fala: 'Não achei comuns em ' + cidade + '. Confere o nome da cidade?' };
+  cidade = d.cidade;
+  var lista = d.comuns.map(function(c) {
+    var horas;
+    if (rjm) { var m = String(c.rjm || '').match(/(dom|seg|ter|qua|qui|sex|s[aá]b)\w*\s+(\d{1,2}:\d{2})/i); horas = m && (!dia || _GL_CM_DIAS[dia.i].slice(0, 3).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '') === m[1].slice(0, 3).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) ? [m[2]] : []; }
+    else horas = (c.cultos || []).filter(function(x){ return !dia || x.dia === _GL_CM_DIAS[dia.i]; }).map(function(x){ return x.hora; });
+    return { c: c, horas: horas };
+  }).filter(function(x){ return x.horas.length || (!dia && !rjm); });
+  var oque = rjm ? 'RJM' : 'culto';
+  if (!lista.length) return { texto: 'Não achei ' + oque + ' ' + (dia ? dia.rot : '') + ' nas comuns de **' + cidade + '** 🤔', botoes: [_glComunsMapa(d.comuns[0])] };
+  lista.sort(function(a, b){ return String(a.horas[0] || '99').localeCompare(String(b.horas[0] || '99')) || a.c.nome.localeCompare(b.c.nome); });
+  var agora = new Date(), hm = String(agora.getHours()).padStart(2, '0') + ':' + String(agora.getMinutes()).padStart(2, '0');
+  var linha = function(x) {
+    var c = x.c, quando = dia || rjm ? x.horas.join(' e ') : (c.cultos || []).map(function(k){ return k.dia.slice(0, 3) + ' ' + k.hora; }).join(', ');
+    var passou = dia && dia.hoje && x.horas.every(function(h){ return h < hm; });
+    return '* **' + c.nome + '**' + (quando ? ' — ' + quando : '') + (passou ? ' (já começou)' : '') + '\n  ' + c.endereco + (c.bairro ? ' (' + c.bairro + ')' : '');
+  };
+  var MAX = 15, titulo = dia ? '⛪ **' + (rjm ? 'RJM' : 'Cultos') + ' ' + dia.rot + ' em ' + cidade + '** — ' + lista.length + ' comum(ns):' : '⛪ **Comuns de ' + cidade + '** (' + lista.length + '):';
+  var texto = titulo + '\n' + lista.slice(0, MAX).map(linha).join('\n') + (lista.length > MAX ? '\n…e mais ' + (lista.length - MAX) + '. Veja todas no mapa.' : '') + '\n\nFonte: congregacoes.com.br';
+  var exemplos = lista.slice(0, 4).map(function(x){ return x.c.nome + (x.horas[0] ? ' às ' + x.horas[0] : ''); }).join(', ');
+  var fala = dia ? (dia.rot.charAt(0).toUpperCase() + dia.rot.slice(1) + ' tem ' + oque + ' em ' + lista.length + (lista.length === 1 ? ' comum' : ' comuns') + ' de ' + cidade + '. ' + (lista.length > 1 ? 'Por exemplo: ' : '') + exemplos + '.')
+    : cidade + ' tem ' + lista.length + ' comuns. Deixei a lista aqui na tela.';
+  return { texto: texto, fala: fala, botoes: [_glComunsMapa(lista[0].c)] };
+}
+function _glComunsSituacao(t) {
+  var reg = _cmRegistro(), vis = DB.visitasComuns, dos = getAllComuns();
+  var regs = Object.keys(reg).map(function(k){ return reg[k]; }).filter(function(r){ return r && r.status; });
+  var visitadas = regs.filter(function(r){ return r.status === 'visitado'; }).map(function(r){ return r.nome + (r.cidade ? ' (' + r.cidade + ')' : ''); });
+  vis.forEach(function(n){ if (!visitadas.some(function(v){ return _cmNorm(v).indexOf(_cmNorm(n)) === 0; })) visitadas.push(n); });
+  var devendo = regs.filter(function(r){ return r.status === 'devendo'; }).map(function(r){ return r.nome + (r.cidade ? ' (' + r.cidade + ')' : ''); });
+  dos.forEach(function(n) {
+    var ja = visitadas.some(function(v){ return _cmNorm(v).indexOf(_cmNorm(n)) === 0; }) || devendo.some(function(v){ return _cmNorm(v).indexOf(_cmNorm(n)) === 0; });
+    if (!ja) devendo.push(n);
+  });
+  var abrir = { rotulo: '🗺️ Abrir mapa das comuns', fn: _glAbrir(function(){ showSection('visitas'); openVisitasSubmenu('comuns'); }) };
+  if (/\b(devendo|devemos|deve|pendentes?|falta visitar|faltam|nao visitamos|ainda nao)\b/.test(t))
+    return { texto: devendo.length ? '🟠 **Estamos devendo visita** (' + devendo.length + '):\n' + devendo.map(function(n){ return '* ' + n; }).join('\n') : 'Não estamos devendo visita a nenhuma comum 🙌', botoes: [abrir] };
+  return { texto: visitadas.length ? '✅ **Comuns que já visitamos** (' + visitadas.length + '):\n' + visitadas.map(function(n){ return '* ' + n; }).join('\n') : 'Ainda não tem nenhuma comum marcada como visitada.', botoes: [abrir] };
+}
+
 // ── Intenções (a primeira que bater responde) ──
 const _GL_INTENCOES = [
   // Modo comando (formulário guiado): "comando marcar evento", "comando nova visita"...
@@ -12780,6 +13105,26 @@ const _GL_INTENCOES = [
       var chave = /\bevento/.test(t) ? 'evento' : /\bvisita/.test(t) ? 'visita' : /\b(membro|jovem|irmao|irma|cadastr)/.test(t) ? 'membro' : /\breuniao/.test(t) ? 'reuniao' : /\bata\b/.test(t) ? 'ata' : null;
       if (chave) return _glFluxoIniciar(chave);
       return { texto: 'Comandos guiados disponíveis (eu pergunto campo por campo):\n* **comando marcar evento**\n* **comando marcar visita**\n* **comando cadastrar membro**\n* **comando nova reunião**\n* **comando nova ata**' };
+    } },
+  // Comuns: "comuns que têm culto hoje em Itaquaquecetuba", "onde tem culto domingo em Suzano",
+  // "quais comuns já visitamos", "estamos devendo visita pra quais comuns", "abre o mapa das comuns"
+  { nome: 'comuns', re: /\b(comuns?|comum|casas? de oracao|congregacoes)\b|\b(tem|tera|onde|quais?|qual|horarios?|havera) (o |os |de |do |um )?(cultos?|rjm)\b/, nivel: 'todos', fazer: function(t) {
+      if (/\busuario comum\b/.test(t)) return null; // "tornar Fulano usuário comum" é do ADM
+      if (/^(criar|cria|marca|marcar|agendar|agenda) /.test(t)) return null; // "marcar visita na comum..." é das visitas
+      if (/\b(visitamos|visitadas?|devendo|devemos|pendentes?|falta visitar|nao visitamos)\b/.test(t) && !/\bcultos?\b/.test(t)) {
+        if (!_glPode('logado')) return _glNegado('logado');
+        return _glComunsSituacao(t);
+      }
+      if (/\bmapa\b/.test(t)) {
+        var lugar = _glCidadeComuns(t);
+        if (!lugar || !lugar.cidade) return { texto: 'Abrindo o mapa das comuns 🗺️', depois: _glAbrir(function(){ showSection('visitas'); openVisitasSubmenu('comuns'); }) };
+        return cmBuscar({ cidade: lugar.cidade, uf: lugar.uf || 'SP', soCidade: true }).then(function(d) {
+          if (!d.comuns.length) return { texto: 'Não achei comuns em **' + lugar.cidade + '** 🤔 Confere o nome da cidade?' };
+          var c = d.comuns.find(function(x){ return x.tipo === 'Central'; }) || d.comuns[0];
+          return { texto: '🗺️ Abrindo o mapa em **' + d.cidade + '** e cidades vizinhas…', depois: _glAbrir(function(){ cmIrPara(c.lat, c.lng); }) };
+        }, function(e) { return { texto: '😕 ' + e.message }; });
+      }
+      return _glComunsCultos(t);
     } },
   // Saudação / identidade / ajuda
   { re: /^(oi|ola|opa|e ai|bom dia|boa tarde|boa noite|paz de deus|a paz de deus)\b.{0,15}$/, nivel: 'todos', fazer: function() {
@@ -13217,12 +13562,47 @@ function _glPedacos(original, def) {
 // Encaixa os pedaços nos campos, respeitando a ordem; devolve os valores achados
 // Encaixa os pedaços de uma fala nos campos, a partir do primeiro campo ainda
 // vazio do comando (f.valores/f.pulados). Devolve os campos preenchidos agora.
+// Pedaços que ainda servem pra algum campo vazio. Uma data/hora quando a data/hora
+// já foi preenchida volta a ser texto ("Rua 15 de Novembro, 200" é endereço).
+function _glPedacosUteis(f, original) {
+  var campos = _glCamposDe(f.def);
+  var vago = function(tipo){ return campos.some(function(c){ return c.tipo === tipo && f.valores[c.k] === undefined && !f.pulados[c.k]; }); };
+  var out = [];
+  _glPedacos(original, f.def).forEach(function(p) {
+    if (p.tipo !== 'texto' && p.tipo !== 'pular' && !vago(p.tipo)) p = { tipo: 'texto', txt: p.txt };
+    var ant = out[out.length - 1];
+    if (p.tipo === 'texto' && ant && ant.tipo === 'texto') ant.txt = (ant.txt + ' ' + p.txt).replace(/\s+([,.])/g, '$1');
+    else out.push(p);
+  });
+  return out;
+}
+// Endereço/local ditado em partes ("Rua" … "Jardim Alegre, 69"): o pedaço seguinte
+// continua o mesmo campo quando parece continuação de endereço
+const _GL_CAMPOS_ENDERECO = ['endereco', 'local'];
+function _glContinuaEndereco(anterior, novo) {
+  var a = _glNorm(anterior), n = _glNorm(novo);
+  if (!n) return false;
+  if (/^(numero|n |no |n\.|n[º°]|\d|casa|bloco|bl |apto|apartamento|ap |lote|quadra|qd|jardim|jd|vila|parque|pq|bairro|rua|avenida|av |travessa|estrada|alameda|viela|esquina|perto|proximo (a|ao|do|da)|em frente|ao lado|cep|centro|km|s\/n|sem numero)/.test(n)) return true;
+  if (a.split(' ').length === 1) return true;                                  // só "Rua", "Avenida"
+  if (!/\d/.test(a) && /\d/.test(n)) return true;                              // "Rua das Flores" … "35"
+  if (/\b(de|da|do|das|dos|e|na|no|em|n|numero|com)$/.test(a)) return true;    // frase cortada no meio
+  return false;
+}
 function _glEncaixar(f, original) {
   var campos = _glCamposDe(f.def), novos = [];
   var pendente = function(c){ return f.valores[c.k] === undefined && !f.pulados[c.k]; };
   var i = campos.findIndex(pendente); if (i < 0) i = campos.length;
-  _glPedacos(original, f.def).forEach(function(p) {
-    if (p.tipo === 'pular') { while (i < campos.length && !pendente(campos[i])) i++; if (i < campos.length) { f.pulados[campos[i].k] = true; novos.push({ c: campos[i], pulou: true }); i++; } return; }
+  // colado: endereço/local preenchido pelo pedaço anterior. Uma data/hora que sobra
+  // logo depois dele faz parte do endereço ("Rua" + "15 de novembro" + ", 200").
+  var colado = null, juntou = false;
+  _glPedacosUteis(f, original).forEach(function(p) {
+    if (p.tipo === 'pular') { colado = null; while (i < campos.length && !pendente(campos[i])) i++; if (i < campos.length) { f.pulados[campos[i].k] = true; novos.push({ c: campos[i], pulou: true }); i++; } return; }
+    var temVaga = campos.some(function(c){ return pendente(c) && c.tipo === p.tipo; });
+    if (p.tipo !== 'texto' && !temVaga) {
+      if (colado) { f.valores[colado.k] += ' ' + p.txt; juntou = true; return; }
+      p = { tipo: 'texto', txt: p.txt };
+    } else if (p.tipo === 'texto' && colado && juntou) { f.valores[colado.k] = (f.valores[colado.k] + ' ' + p.txt).replace(/\s+([,.])/g, '$1'); return; }
+    colado = null; juntou = false;
     // procura, a partir do campo atual, o próximo vazio que aceita esse tipo de pedaço
     for (var j = i; j < campos.length; j++) {
       var c = campos[j];
@@ -13231,7 +13611,9 @@ function _glEncaixar(f, original) {
       var v = p.tipo === 'texto' ? p.txt : _glValorCampo(c, p.txt);
       if (c.tipo === 'texto' && c.k === 'local') v = v.replace(/^(na|no|em|nas|nos)\s+/i, '');
       if (v === null || v === '') break;
-      f.valores[c.k] = v; novos.push({ c: c }); i = j + 1; break;
+      f.valores[c.k] = v; novos.push({ c: c }); i = j + 1;
+      if (c.tipo === 'texto' && _GL_CAMPOS_ENDERECO.indexOf(c.k) >= 0) colado = c;
+      break;
     }
   });
   return novos;
@@ -13291,10 +13673,19 @@ function _glFluxoResponder(original) {
   }
   var atual = campos.find(function(c){ return f.valores[c.k] === undefined && !f.pulados[c.k]; });
   if (!atual) return _glFluxoFinalizar();
+  // "Próximo" logo depois de um texto: fecha aquele campo (o endereço terminou) e segue, sem pular nada
+  if (/^(proximo|proximo campo|seguinte|ok|certo|isso)$/.test(t) && f.ultimoTexto) { f.ultimoTexto = null; return _glFluxoProgresso([]); }
   // Só "pular" (ou "próximo", "nenhum"...): pula o campo atual
-  if (/^(pular|proximo|nenhum|nenhuma|sem|nao tem|deixa em branco)$/.test(t)) { f.pulados[atual.k] = true; return _glFluxoProgresso([{ c: atual, pulou: true }]); }
-  var pedacos = _glPedacos(original, f.def);
+  if (/^(pular|proximo|proximo campo|nenhum|nenhuma|sem|nao tem|deixa em branco)$/.test(t)) { f.pulados[atual.k] = true; f.ultimoTexto = null; return _glFluxoProgresso([{ c: atual, pulou: true }]); }
+  var pedacos = _glPedacosUteis(f, original);
   var soTexto = pedacos.length === 1 && pedacos[0].tipo === 'texto';
+  // Continuação do endereço/local ditado em partes
+  if (soTexto && f.ultimoTexto && _GL_CAMPOS_ENDERECO.indexOf(f.ultimoTexto.k) >= 0 && Date.now() - f.ultimoEm < 7000 &&
+      _glContinuaEndereco(f.valores[f.ultimoTexto.k], pedacos[0].txt)) {
+    f.valores[f.ultimoTexto.k] = (f.valores[f.ultimoTexto.k] + ' ' + pedacos[0].txt.replace(/[.!?]+$/, '')).replace(/\s+([,.])/g, '$1');
+    f.ultimoEm = Date.now();
+    return _glFluxoProgresso([{ c: f.ultimoTexto }]);
+  }
   if (soTexto && atual.tipo !== 'texto') {
     // Campo de data/hora/sim-não... falado sozinho
     var v = _glValorCampo(atual, original);
@@ -13390,6 +13781,7 @@ const GLORINHA_AVATAR = '<svg viewBox="0 0 64 64" width="100%" height="100%" ari
 function abrirGlorinha() {
   document.getElementById('modal-glorinha').classList.add('open');
   _glVigiaAtualizarChave();
+  _glVozPreencher();
   // Se a pessoa entrou/saiu da conta desde a última conversa, recomeça (o que ela pode fazer mudou)
   if (_glorinhaHist.length && _glorinhaHist._perfil !== _glPerfil()) _glorinhaHist = [];
   if (!_glorinhaHist.length) {
@@ -13444,8 +13836,8 @@ function _glorinhaResponder(r) {
 // O modelo não conhece a palavra "Glorinha": ele a ouve como "loirinha" (testado).
 const GL_VOSK_JS = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
 const GL_MODELO_URL = new URL('modelos/vosk-pt-pequeno.tar.gz', location.href).href;
-const GL_CHAMADO = /\b(g?loirinha|glorinha|gloria nha|glorinho|florinha|lorinha|gorinha)\b|^(a |o )?linha$/;
-const GL_CHAMADO_ORIGINAL = /^[\s\S]*?\b(g?loirinha|glorinha|gl[oó]ria nha|glorinho|florinha|lorinha|gorinha)\b[\s,!.]*/i;
+const GL_CHAMADO = new RegExp('(^|\\s)(' + GL_VARIANTES + ')(?=\\s|$|[,.!?:;])|^(a |o )?linha$', 'i');
+const GL_CHAMADO_ORIGINAL = new RegExp('^[\\s\\S]*?(^|\\s)(' + GL_VARIANTES + ')(?=\\s|$|[,.!?:;])[\\s,!.]*', 'i');
 let _glOuvido = { rec: null, taxa: 0, stream: null, ctx: null, carregando: null, falhou: false, ultimo: 0 };
 
 function _glVigiaLigado() { try { return localStorage.getItem('rj_glorinha_ouvir') === '1'; } catch(e) { return false; } }
@@ -13508,9 +13900,13 @@ async function _glOuvidoAbrir() {
     await _glOuvidoCarregar(ctx.sampleRate);
     if (!_glOuvidoDeveOuvir()) { stream.getTracks().forEach(function(t){ t.stop(); }); ctx.close(); return; }
     var fonte = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1);
-    var ganho = ctx.createGain(); ganho.gain.value = 2.5; // reforço: entende sem precisar falar alto
+    // Volume no máximo: ganho alto pra pegar voz baixa/de longe + compressor que
+    // segura os picos (sem ele, falar perto do celular estouraria o som e ela erraria)
+    var ganho = ctx.createGain(); ganho.gain.value = 6;
+    var comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -28; comp.knee.value = 12; comp.ratio.value = 12; comp.attack.value = 0.003; comp.release.value = 0.2;
     proc.onaudioprocess = function(e) { if (_glOuvido.ctx === ctx && _glOuvido.rec) { try { _glOuvido.rec.acceptWaveform(e.inputBuffer); } catch(x) {} } };
-    fonte.connect(ganho); ganho.connect(proc); proc.connect(ctx.destination);
+    fonte.connect(ganho); ganho.connect(comp); comp.connect(proc); proc.connect(ctx.destination);
     if (ctx.state === 'suspended') ctx.resume();
     _glOuvido.stream = stream; _glOuvido.ctx = ctx; _glOuvido.abertoEm = Date.now();
   } catch(e) {
@@ -13660,6 +14056,14 @@ async function glorinhaEnviar(textoSugestao, audio) {
     try { local = _glorinhaLocal(texto); } catch(e) { console.warn('Glorinha (local):', e); }
     if (local) {
       _glorinhaHist.push({ role: 'user', text: texto });
+      if (typeof local.then === 'function') {
+        // Resposta que precisa buscar na internet (ex.: comuns de uma cidade)
+        _glorinhaPensando = true;
+        _glorinhaRender();
+        try { local = await local; } catch(e) { console.warn('Glorinha (local):', e); local = null; }
+        _glorinhaPensando = false;
+        if (!local) local = { texto: 'Ops, não consegui buscar isso agora 😕' };
+      }
       _glorinhaResponder(local);
       return;
     }
@@ -13918,6 +14322,57 @@ async function _audioParaWav(blob) {
   return btoa(bin);
 }
 
+// ── Voz dela: a voz feminina mais natural que o aparelho tiver ──
+// Prefere as vozes "naturais"/neurais/online (Edge: Francisca, Thalita; Android:
+// as "network" do Google; iPhone: Luciana aprimorada) e evita as masculinas.
+// A pessoa pode escolher outra na lista (fica salva só neste aparelho).
+function _glVozesPt() {
+  if (!('speechSynthesis' in window)) return [];
+  return speechSynthesis.getVoices().filter(function(v){ return /^pt[-_]BR/i.test(v.lang) || /portugu[eê]s.*bra/i.test(v.name); });
+}
+function _glVozPontos(v) {
+  var n = (v.name + ' ' + v.voiceURI).toLowerCase(), p = 0;
+  if (/natural|neural|online|wavenet|enhanced|premium|aprimorad|melhorad|network/.test(n)) p += 50;
+  if (/francisca|thalita|leila|yara|vit[oó]ria|luciana|fernanda|maria|helo[ií]sa|camila|brenda|elza|giovanna|let[ií]cia|manuela|raquel|joana|female|feminin|mulher|-afs-|-pte-/.test(n)) p += 30;
+  if (/google/.test(n)) p += 15;
+  if (/ant[oô]nio|daniel|felipe|donato|f[aá]bio|humberto|j[uú]lio|nicolau|val[eé]rio|macerio|\bmale\b|masculin|homem|-ptd-/.test(n)) p -= 80;
+  if (/compact|espeak/.test(n)) p -= 20;
+  return p;
+}
+function _glVozAtual() {
+  var vs = _glVozesPt();
+  var salva = null; try { salva = localStorage.getItem('rj_glorinha_voz'); } catch(e) {}
+  if (salva) { var v = vs.find(function(x){ return x.voiceURI === salva || x.name === salva; }); if (v) return v; }
+  return vs.slice().sort(function(a, b){ return _glVozPontos(b) - _glVozPontos(a); })[0] || null;
+}
+function _glVozAplicar(fala) {
+  var voz = _glVozAtual();
+  if (voz) fala.voice = voz;
+  var natural = voz && _glVozPontos(voz) >= 50;
+  // As vozes simples soam menos robóticas um tiquinho mais agudas e no ritmo de conversa
+  fala.rate = natural ? 1.03 : 1.08;
+  fala.pitch = natural ? 1.0 : 1.12;
+}
+function _glVozPreencher() {
+  var sel = document.getElementById('glorinha-voz'), linha = document.getElementById('glorinha-voz-linha');
+  if (!sel) return;
+  var vs = _glVozesPt();
+  linha.style.display = vs.length > 1 ? 'flex' : 'none';
+  var atual = _glVozAtual();
+  sel.innerHTML = vs.slice().sort(function(a, b){ return _glVozPontos(b) - _glVozPontos(a); }).map(function(v) {
+    var nome = v.name.replace(/^Microsoft\s+/i, '').replace(/\s*-\s*Portuguese \(Brazil\)/i, '').replace(/\s*\(.*?\)\s*/g, ' ').trim();
+    return '<option value="' + String(v.voiceURI).replace(/"/g, '&quot;') + '"' + (atual && v.voiceURI === atual.voiceURI ? ' selected' : '') + '>' + nome.replace(/</g, '&lt;') + (_glVozPontos(v) >= 50 ? ' ✨' : '') + '</option>';
+  }).join('');
+}
+function glorinhaEscolherVoz(uri) {
+  try { localStorage.setItem('rj_glorinha_voz', uri); } catch(e) {}
+  glorinhaTestarVoz();
+}
+function glorinhaTestarVoz() { _glorinhaFalar('Oi! Essa é a minha voz. Gostou?'); }
+if ('speechSynthesis' in window) {
+  try { speechSynthesis.addEventListener('voiceschanged', _glVozPreencher); } catch(e) {}
+}
+
 // Lê a resposta em voz alta com a voz em português do próprio aparelho
 let _glorinhaFalaAtual = null;
 function _glorinhaFalar(texto, aoTerminar) {
@@ -13931,8 +14386,7 @@ function _glorinhaFalar(texto, aoTerminar) {
     .replace(/\n+/g, '. ');
   var fala = new SpeechSynthesisUtterance(limpo);
   fala.lang = 'pt-BR';
-  var voz = speechSynthesis.getVoices().find(function(v){ return /pt[-_]BR/i.test(v.lang); });
-  if (voz) fala.voice = voz;
+  _glVozAplicar(fala);
   var parar = document.getElementById('glorinha-parar-voz');
   fala.onstart = function(){ parar.style.display = 'inline-block'; };
   fala.onend = function(){
@@ -14162,6 +14616,11 @@ window.addEventListener('orientationchange', posicionarBotaoInicio);
       <span>👂 Ouvir quando eu chamar <b>"Glorinha"</b> (microfone fica ligado com o app aberto, sem bip)</span>
       <span id="glorinha-ouvir-aviso" style="color:var(--danger);"></span>
     </label>
+    <div id="glorinha-voz-linha" style="display:none;align-items:center;gap:6px;font-size:.76rem;color:var(--text-muted);margin:-2px 0 8px;">
+      <span>🗣️ Voz:</span>
+      <select id="glorinha-voz" onchange="glorinhaEscolherVoz(this.value)" style="flex:1;min-width:0;padding:4px 6px;font-size:.74rem;border-radius:8px;"></select>
+      <button class="btn btn-sm btn-secondary" onclick="glorinhaTestarVoz()" style="padding:4px 8px;">▶ Ouvir</button>
+    </div>
     <div id="glorinha-msgs" style="flex:1;min-height:200px;max-height:55vh;overflow-y:auto;padding:4px 2px;"></div>
     <div id="glorinha-sugestoes" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px;">
       <button class="btn btn-sm btn-secondary" onclick="glorinhaEnviar('Quem faltou nas últimas 3 reuniões?')">Faltas recentes</button>

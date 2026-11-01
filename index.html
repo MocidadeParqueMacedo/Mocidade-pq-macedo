@@ -291,8 +291,9 @@
       // onDisconnect chegar a disparar) — qualquer entrada com ping muito antigo
       // é ignorada na contagem/lista de quem está online.
       if (window._presenceHeartbeat) clearInterval(window._presenceHeartbeat);
+      window._presenceDados = { nome, email, online: true, desde: Date.now(), foto: foto || null };
       window._presenceHeartbeat = setInterval(async () => {
-        try { await update(presRef, { ultimoPing: Date.now() }); } catch(e) {}
+        try { await set(presRef, Object.assign({}, window._presenceDados, { ultimoPing: Date.now() })); } catch(e) {}
       }, 30000);
 
       // Also listen to connection to re-register on reconnect (only once!)
@@ -330,6 +331,15 @@
     } catch(e) {}
   };
 
+  // Voltou pro app (o registro foi apagado ao ir pro segundo plano): grava de novo na hora
+  const _reRegistrarPresenca = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (window._presenceRef && window._presenceDados) set(window._presenceRef, Object.assign({}, window._presenceDados, { ultimoPing: Date.now() })).catch(() => {});
+    if (window._visitanteId && !window._presenceRef) set(ref(rtdb, 'presenca/visitantes/' + window._visitanteId), { acessou: Date.now(), ultimoPing: Date.now() }).catch(() => {});
+  };
+  document.addEventListener('visibilitychange', _reRegistrarPresenca);
+  window.addEventListener('pageshow', _reRegistrarPresenca);
+
   window._visitanteId = null;
   window._visitanteHeartbeat = null;
 
@@ -350,7 +360,7 @@
         await set(visitRef, { acessou: Date.now(), ultimoPing: Date.now() });
         if (window._visitanteHeartbeat) clearInterval(window._visitanteHeartbeat);
         window._visitanteHeartbeat = setInterval(async () => {
-          try { await update(visitRef, { ultimoPing: Date.now() }); } catch(e) {}
+          try { await set(visitRef, { acessou: Date.now(), ultimoPing: Date.now() }); } catch(e) {}
         }, 30000);
       });
     } catch(e) {}
@@ -457,6 +467,26 @@
   };
 
   const PRESENCA_STALE_MS = 90000; // 90s sem heartbeat = considera "fantasma" e ignora
+  // Quem está online de verdade. Não depende só do relógio de cada celular (um
+  // aparelho com a hora errada sumiria da lista): vale também se o "ping" dele
+  // MUDOU aqui nos últimos 90s. Sem nome/e-mail = registro quebrado, ignora.
+  const _pingVisto = new Map();
+  function _presencaVivos(entradas, ehUsuario) {
+    const agora = Date.now();
+    return entradas.filter(([k, v]) => {
+      if (!v || (ehUsuario && !v.nome && !v.email)) return false;
+      const ping = v.ultimoPing || v.desde || v.acessou || 0;
+      const visto = _pingVisto.get(k);
+      if (!visto || visto.ping !== ping) _pingVisto.set(k, { ping, em: visto ? agora : 0 });
+      const mudouEm = _pingVisto.get(k).em;
+      return (agora - ping) < PRESENCA_STALE_MS || (mudouEm && agora - mudouEm < PRESENCA_STALE_MS);
+    }).map(([, v]) => v);
+  }
+  // A mesma pessoa em dois aparelhos conta uma vez só
+  function _semRepetir(lista) {
+    const vistos = new Set();
+    return lista.filter(u => { const k = String(u.email || u.nome).toLowerCase(); if (vistos.has(k)) return false; vistos.add(k); return true; });
+  }
 
   window._presencaDebug = { domContentLoadedDisparou: false, passouSyncInicial: false, chegouAntesDeEscutar: false, listenerAnexado: false, vezesQueDisparou: 0, ultimoBruto: null, ultimoErro: null };
 
@@ -467,12 +497,7 @@
       const brutos = snap.exists() ? Object.entries(snap.val()) : [];
       window._presencaDebug.ultimoBruto = brutos.length;
       window._usuariosOnlineBrutos = brutos; // guarda cru (com chaves) para poder limpar fantasmas
-      window._usuariosOnline = brutos
-        .map(([,v]) => v)
-        .filter(v => {
-          const ping = v.ultimoPing || v.desde || 0;
-          return (Date.now() - ping) < PRESENCA_STALE_MS;
-        });
+      window._usuariosOnline = _semRepetir(_presencaVivos(brutos, true));
       if (typeof window._atualizarBotaoOnline === 'function') window._atualizarBotaoOnline();
       // O painel "Quem está online" (se estiver aberto) precisa ser
       // atualizado toda vez que o dado mudar — antes só o número do botão
@@ -486,12 +511,9 @@
       if (typeof window._atualizarPainelOnline === 'function') window._atualizarPainelOnline();
     });
     window._fbOnValue(ref(rtdb, 'presenca/visitantes'), (snap) => {
-      const brutosVisit = snap.exists() ? Object.values(snap.val()) : [];
+      const brutosVisit = snap.exists() ? Object.entries(snap.val()).map(([k, v]) => ['v:' + k, v]) : [];
       window._visitantesOnlineBrutos = brutosVisit;
-      window._visitantesOnline = brutosVisit.filter(v => {
-        const ping = v.ultimoPing || v.acessou || 0;
-        return (Date.now() - ping) < PRESENCA_STALE_MS;
-      }).length;
+      window._visitantesOnline = _presencaVivos(brutosVisit, false).length;
       if (typeof window._atualizarBotaoOnline === 'function') window._atualizarBotaoOnline();
       if (typeof window._atualizarPainelOnline === 'function') window._atualizarPainelOnline();
     });
@@ -501,18 +523,10 @@
     if (window._presencaWatchdog) clearInterval(window._presencaWatchdog);
     window._presencaWatchdog = setInterval(() => {
       if (window._usuariosOnlineBrutos) {
-        window._usuariosOnline = window._usuariosOnlineBrutos
-          .map(([,v]) => v)
-          .filter(v => {
-            const ping = v.ultimoPing || v.desde || 0;
-            return (Date.now() - ping) < PRESENCA_STALE_MS;
-          });
+        window._usuariosOnline = _semRepetir(_presencaVivos(window._usuariosOnlineBrutos, true));
       }
       if (window._visitantesOnlineBrutos) {
-        window._visitantesOnline = window._visitantesOnlineBrutos.filter(v => {
-          const ping = v.ultimoPing || v.acessou || 0;
-          return (Date.now() - ping) < PRESENCA_STALE_MS;
-        }).length;
+        window._visitantesOnline = _presencaVivos(window._visitantesOnlineBrutos, false).length;
       }
       if (typeof window._atualizarBotaoOnline === 'function') window._atualizarBotaoOnline();
       if (typeof window._atualizarPainelOnline === 'function') window._atualizarPainelOnline();
@@ -1898,6 +1912,14 @@
     <div class="card-title">👥 Todos os Usuários</div>
     <div id="admin-todos-lista"></div>
   </div>
+
+  <!-- Backup -->
+  <div class="card" style="margin-top:14px;">
+    <div class="card-title">💾 Backup mensal</div>
+    <div style="font-size:.78rem;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">Baixa uma cópia de tudo do app (membros, reuniões, presenças, recitativos, eventos, visitas, atas, lançamentos e contas) num arquivo. Guarde no Drive ou no computador — uma vez por mês é o ideal.</div>
+    <button class="btn btn-primary btn-full" id="btn-backup" onclick="baixarBackup()">⬇️ Baixar backup</button>
+    <div id="backup-ultimo" style="font-size:.72rem;color:var(--text-muted);margin-top:6px;text-align:center;"></div>
+  </div>
 </div>
 
 <!-- MODAL: NOVA REUNIÃO DE JOVENS -->
@@ -1921,7 +1943,7 @@
 </div>
 
 <!-- MODAL: NOVO MEMBRO -->
-<div class="modal-overlay" id="modal-inativar" onclick="if(event.target===this)this.classList.remove('open')">
+<div class="modal-overlay" id="modal-inativar" style="z-index:260;" onclick="if(event.target===this)this.classList.remove('open')">
   <div class="modal">
     <div class="modal-title">⏸️ Inativar membro</div>
     <div style="font-size:.85rem;margin-bottom:10px;"><b id="inativar-nome"></b> vai continuar no cadastro, mas não aparece mais nas outras funções (chamada, faltas, recitativos...).</div>
@@ -2020,6 +2042,8 @@
     </div>
     <button class="btn btn-primary btn-full" onclick="salvarMembro()">💾 Salvar Membro</button>
     <button id="btn-excluir-membro" class="btn btn-full" style="display:none;background:var(--danger);color:#fff;margin-top:8px;" onclick="excluirMembro()">🗑 Excluir Membro</button>
+    <!-- Inativar / ativar perfil (só ao editar) -->
+    <div id="membro-situacao-wrap" style="display:none;margin-top:18px;padding-top:14px;border-top:1.5px dashed var(--border);"></div>
     <div style="height:8px;"></div>
   </div>
 </div>
@@ -2396,8 +2420,7 @@
       <button onclick="fecharModalRecitativo()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted);">✕</button>
     </div>
 
-    <button class="btn btn-secondary btn-full" style="margin-bottom:8px;border:1.5px dashed var(--accent);color:var(--accent);font-weight:700;" onclick="abrirLeitorRecitativo()">📷 Ler Recitativo por Foto</button>
-    <button class="btn btn-secondary btn-full" style="margin-bottom:14px;border:1.5px dashed var(--primary);color:var(--primary);font-weight:700;" onclick="abrirLeitorLote()">📚 Ler Vários de Uma Vez</button>
+    <button class="btn btn-secondary btn-full" style="margin-bottom:14px;border:1.5px dashed var(--accent);color:var(--accent);font-weight:700;" onclick="abrirLeitorLote();document.getElementById('lote-input-galeria').click()">📷 Ler Recitativo</button>
 
     <!-- Data da Reunião de Jovens -->
     <div class="form-group">
@@ -2590,22 +2613,19 @@
 <div class="modal-overlay" id="modal-leitor-lote">
   <div class="modal">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-      <div class="modal-title" style="color:var(--primary);">📚 Ler Vários Recitativos</div>
+      <div class="modal-title" style="color:var(--primary);">📷 Ler Recitativo</div>
       <button onclick="fecharLeitorLote()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted);">✕</button>
     </div>
 
     <!-- Passo 1: escolher várias fotos -->
     <div id="lote-passo-fotos">
       <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px;line-height:1.5;">
-        Escolha várias fotos de uma vez (uma de cada cartão). O app localiza e endireita cada cartão sozinho, lê o número de ordem no canto superior direito, e organiza tudo pra você conferir antes de lançar.
-      </div>
-      <div style="background:#eef2ff;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.74rem;color:var(--text);line-height:1.6;">
-        💡 Como cada foto é processada sozinha (sem recorte manual), capriche na hora de tirar: boa luz, cartão de frente pra câmera, sem cortar as bordas.
+        Escolha a foto do cartão — ou várias de uma vez. O app arruma a foto e lê tudo sozinho; depois é só conferir.
       </div>
       <input type="file" id="lote-input-galeria" accept="image/*" multiple style="display:none;" onchange="leitorLoteProcessarArquivos(this)"/>
-      <input type="file" id="lote-input-camera" accept="image/*" capture="environment" multiple style="display:none;" onchange="leitorLoteProcessarArquivos(this)"/>
-      <button class="btn btn-primary btn-full" style="margin-bottom:8px;" onclick="document.getElementById('lote-input-galeria').click()">🖼️ Escolher Várias Fotos da Galeria</button>
-      <button class="btn btn-secondary btn-full" onclick="document.getElementById('lote-input-camera').click()">📸 Tirar Fotos (uma de cada vez)</button>
+      <input type="file" id="lote-input-camera" accept="image/*" capture="environment" style="display:none;" onchange="leitorLoteProcessarArquivos(this)"/>
+      <button class="btn btn-primary btn-full" style="margin-bottom:8px;" onclick="document.getElementById('lote-input-galeria').click()">🖼️ Escolher foto(s)</button>
+      <button class="btn btn-secondary btn-full" onclick="document.getElementById('lote-input-camera').click()">📸 Tirar foto</button>
     </div>
 
     <!-- Passo 2: processando -->
@@ -2620,11 +2640,11 @@
     <!-- Passo 3: revisão em lote — grade com a imagem digitalizada de cada cartão, na ordem detectada -->
     <div id="lote-passo-revisao" style="display:none;">
       <div style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px;line-height:1.5;">
-        ✏️ Confira a <b>ordem</b> e os dados de cada um. Toque no cartão pra editar, nas setas ▲▼ pra mudar a posição, na ✂️ pra selecionar um trecho específico do texto (senão, "Enviar todos" usa o versículo inteiro automaticamente), ou no 🗑 pra remover.
+        ✏️ Confira o que foi lido. Toque no cartão pra corrigir, nas setas ▲▼ pra mudar a ordem, ou no 🗑 pra remover. Ao enviar, o recitativo já é salvo.
       </div>
       <div id="lote-lista" style="display:flex;flex-direction:column;gap:10px;max-height:55vh;overflow-y:auto;margin-bottom:12px;"></div>
       <button class="btn btn-secondary btn-full" style="margin-bottom:8px;" onclick="document.getElementById('lote-input-galeria').click()">➕ Adicionar mais fotos</button>
-      <button class="btn btn-primary btn-full" onclick="leitorLoteEnviarTodos()">📤 Enviar todos</button>
+      <button class="btn btn-primary btn-full" onclick="leitorLoteEnviarTodos()">💾 Lançar e salvar</button>
       <button class="btn btn-secondary btn-full" style="margin-top:8px;" onclick="fecharLeitorLote()">Cancelar</button>
     </div>
 
@@ -3912,7 +3932,7 @@ function abrirModalNovo()    {
   var d = document.getElementById('novo-desde'); if (d && !_editMembroId) d.value = todayISO();
   document.getElementById('modal-novo').classList.add('open');
 }
-function fecharModalNovo()   { _editMembroId = null; document.getElementById('modal-novo-titulo').textContent = '➕ Novo Membro'; const excBtn = document.getElementById('btn-excluir-membro'); if(excBtn) excBtn.style.display='none'; document.getElementById('modal-novo').classList.remove('open'); }
+function fecharModalNovo()   { _editMembroId = null; var sw = document.getElementById('membro-situacao-wrap'); if (sw) sw.style.display = 'none'; document.getElementById('modal-novo-titulo').textContent = '➕ Novo Membro'; const excBtn = document.getElementById('btn-excluir-membro'); if(excBtn) excBtn.style.display='none'; document.getElementById('modal-novo').classList.remove('open'); }
 function abrirModalEvento()  { document.getElementById('modal-evento').classList.add('open'); }
 function fecharModalEvento() { document.getElementById('modal-evento').classList.remove('open'); }
 
@@ -4207,6 +4227,7 @@ function abrirEditarMembro(id) {
 
     const excBtn = document.getElementById('btn-excluir-membro');
     if (excBtn) excBtn.style.display = 'block';
+    _renderSituacaoMembro(m);
     document.getElementById('modal-novo').classList.add('open');
   });
 }
@@ -6475,7 +6496,7 @@ function memberCardHTML(m) {
   const visitBadge = visits > 0 ? `<div style="margin-top:4px;"><span style="font-size:.65rem;background:#dcfce7;color:#166534;border-radius:20px;padding:1px 7px;font-weight:700;">🏠 ${visits} visita${visits>1?'s':''}</span></div>` : '';
   const inativo = m.inativo
     ? `<div style="margin-top:6px;padding:6px 8px;background:var(--bg);border-left:3px solid var(--text-muted);border-radius:6px;font-size:.72rem;color:var(--text-muted);line-height:1.35;">
-        <b>Inativado em ${formatDate(m.inativadoEm || '')}:</b><br>${_relEsc(m.justificativaInativo || '—')}</div>`
+        <b>⏸️ Inativo desde ${formatDate(m.inativadoEm || '')}</b></div>`
     : '';
   return `<div class="member-item" onclick="abrirRelatorioMembro('${m.id}', event)" title="Ver relatório" style="${m.inativo ? 'opacity:.72;' : ''}">${avatarHTML(m)}
     <div class="member-info" style="flex:1;min-width:0;">
@@ -6486,13 +6507,63 @@ function memberCardHTML(m) {
       ${inativo}
     </div>
     <div style="display:flex;gap:4px;flex-shrink:0;align-items:center;">
-      <button class="presence-toggle ${m.inativo ? '' : 'checked'}" onclick="event.stopPropagation();alternarMembroAtivo('${m.id}')" title="${m.inativo ? 'Inativo — tocar para ativar' : 'Ativo — tocar para inativar'}" style="margin-right:2px;"></button>
+
       <button onclick="abrirWhatsAppMembro('${m.id}')" style="background:none;border:none;color:#22c55e;font-size:1rem;cursor:pointer;padding:4px;border-radius:8px;" title="WhatsApp">📲</button>
       <button onclick="abrirEditarMembro('${m.id}')" style="background:none;border:none;color:var(--primary);font-size:1rem;cursor:pointer;padding:4px;border-radius:8px;" title="Editar">✏️</button>
       <button onclick="excluirMembroById('${m.id}')" style="background:none;border:none;color:var(--danger);font-size:1rem;cursor:pointer;padding:4px;border-radius:8px;" title="Excluir">🗑</button>
     </div>
     </div>`;
 }
+// ════════ BACKUP (aba ADM) ════════
+// Busca tudo direto do banco (não do cache do aparelho) e baixa um arquivo .json.
+async function baixarBackup() {
+  if (!_isAdmin) { showToast('Só o administrador pode baixar o backup'); return; }
+  var btn = document.getElementById('btn-backup');
+  btn.disabled = true; btn.textContent = '⏳ Juntando os dados…';
+  try {
+    if (!window.FB || !window.FB.read) throw new Error('sem conexão com o banco');
+    var partes = await Promise.all([window.FB.read('app'), window.FB.read('auth_users')]);
+    var app = partes[0] || {};
+    var backup = {
+      app: 'Macedão — Mocidade Parque Macedo',
+      geradoEm: new Date().toISOString(),
+      geradoPor: _userName || '',
+      resumo: {
+        membros: (Array.isArray(app.members) ? app.members : Object.values(app.members || {})).length,
+        reunioes: (Array.isArray(app.meetings) ? app.meetings : Object.values(app.meetings || {})).length,
+        recitativos: (Array.isArray(app.versinhos) ? app.versinhos : Object.values(app.versinhos || {})).length,
+        eventos: (Array.isArray(app.events) ? app.events : Object.values(app.events || {})).length
+      },
+      dados: app,
+      contas: partes[1] || []
+    };
+    var hoje = todayISO();
+    var blob = new Blob([JSON.stringify(backup, null, 1)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'backup-macedao-' + hoje + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 5000);
+    try { localStorage.setItem('rj_ultimo_backup', hoje); } catch(e) {}
+    _mostrarUltimoBackup();
+    showToast('✅ Backup baixado (' + backup.resumo.membros + ' membros, ' + backup.resumo.reunioes + ' reuniões)');
+    registrarAtividade('baixou o backup do app');
+  } catch(e) {
+    console.warn('Backup:', e);
+    showToast('⚠️ Não consegui gerar o backup: ' + (e.message || e));
+  }
+  btn.disabled = false; btn.textContent = '⬇️ Baixar backup';
+}
+function _mostrarUltimoBackup() {
+  var el = document.getElementById('backup-ultimo');
+  if (!el) return;
+  var u = null; try { u = localStorage.getItem('rj_ultimo_backup'); } catch(e) {}
+  if (!u) { el.textContent = 'Nenhum backup baixado neste aparelho ainda.'; return; }
+  var dias = Math.round((new Date(todayISO()) - new Date(u)) / 86400000);
+  el.innerHTML = 'Último backup neste aparelho: ' + formatDate(u) + (dias >= 30 ? ' — <b style="color:var(--danger);">já passou de um mês</b>' : '');
+}
+document.addEventListener('DOMContentLoaded', function(){ setTimeout(_mostrarUltimoBackup, 500); });
+
 // ════════ SELETOR DE DATA EM RODA ════════
 // Todo campo de data do app abre esta roda (dia · mês · ano) em vez do
 // calendário do aparelho. O campo continua sendo type="date" (valor AAAA-MM-DD),
@@ -6663,9 +6734,26 @@ async function _salvarSituacaoMembro(id, dados, atividade, aviso) {
   localStorage.setItem('rj_members', JSON.stringify(mb));
   if (window.FB && window.FB.write) window.FB.write('app/members', mb).catch(function(e){ console.warn(e); showToast('⚠️ Não consegui salvar'); });
   showToast(aviso); registrarAtividade(atividade);
+  if (String(_editMembroId) === String(id)) _renderSituacaoMembro(mb[i]);
   _restoreSubmenu();
   var q = document.getElementById('membros-search-global');
   if (q && q.value.trim()) renderMembrosGlobal();
+}
+// Fim da tela de editar membro: inativar (com justificativa) ou ativar de novo
+function _renderSituacaoMembro(m) {
+  var w = document.getElementById('membro-situacao-wrap');
+  if (!w) return;
+  w.style.display = 'block';
+  if (m.inativo) {
+    w.innerHTML = '<div style="font-size:.85rem;font-weight:800;margin-bottom:4px;">⏸️ Perfil inativo</div>' +
+      '<div style="background:var(--bg);border-left:3px solid var(--text-muted);border-radius:8px;padding:8px 10px;font-size:.8rem;line-height:1.45;margin-bottom:10px;">' +
+        '<b>Inativado em ' + formatDate(m.inativadoEm || '') + ':</b><br>' + _relEsc(m.justificativaInativo || '—') + '</div>' +
+      '<button class="btn btn-full" style="background:var(--success);color:#fff;" onclick="alternarMembroAtivo(\'' + m.id + '\')">▶️ Ativar perfil</button>';
+  } else {
+    w.innerHTML = '<div style="font-size:.85rem;font-weight:800;margin-bottom:4px;">⏸️ Inativar perfil</div>' +
+      '<div style="font-size:.76rem;color:var(--text-muted);line-height:1.45;margin-bottom:10px;">Use quando a pessoa não faz mais parte da mocidade. O cadastro continua guardado, mas ela deixa de aparecer na chamada, nas faltas, nos recitativos, nos aniversários e nas estatísticas. Dá pra ativar de novo quando quiser.</div>' +
+      '<button class="btn btn-secondary btn-full" style="border-color:var(--text-muted);color:var(--text);" onclick="alternarMembroAtivo(\'' + m.id + '\')">⏸️ Inativar perfil</button>';
+  }
 }
 // O membro já fazia parte nessa data? (sem "membro desde" = desde sempre)
 function membroValeEm(m, iso) { return !m || !m.desde || !iso || String(iso).slice(0, 10) >= m.desde; }
@@ -9594,6 +9682,7 @@ async function _processarUmaFotoDoLote(file) {
         imagemDataUrl: canvasFinal.toDataURL('image/png'),
         ordem: exN.ordem || '',
         nome: membroN ? membroN.nome : (exN.nome || ''),
+        membroId: membroN ? membroN.id : null,
         livroIdx: _encontrarLivroPorNome(exN.livro),
         capitulo: exN.capitulo,
         versoDe: exN.versoDe,
@@ -9676,6 +9765,7 @@ async function _processarUmaFotoDoLote(file) {
     imagemDataUrl: canvasFinal.toDataURL('image/png'),
     ordem: ordemDetectada || '',
     nome: membroSugerido ? membroSugerido.nome : (extraido.nome || ''),
+    membroId: membroSugerido ? membroSugerido.id : null,
     livroIdx: livroIdx,
     capitulo: /^\d+$/.test(extraido.capitulo) ? extraido.capitulo : '',
     versoDe: /^\d+$/.test(extraido.versoDe) ? extraido.versoDe : '',
@@ -9738,8 +9828,7 @@ function _renderizarRevisaoLote() {
         (item.trechoSelecionado ? '<div style="font-size:.68rem;color:var(--accent);font-weight:700;">✂️ trecho selecionado</div>' : '') +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">' +
-        '<button onclick="event.stopPropagation();leitorLoteAbrirSelecaoTexto(' + idx + ')" title="Selecionar trecho do texto" style="background:none;border:none;font-size:1.05rem;cursor:pointer;padding:2px;">✂️</button>' +
-        '<button onclick="event.stopPropagation();leitorLoteVerDiagnostico(' + idx + ')" title="Ver diagnóstico dessa foto" style="background:none;border:none;font-size:1.05rem;cursor:pointer;padding:2px;">🔎</button>' +
+
         '<button onclick="event.stopPropagation();leitorLoteRemoverItem(' + idx + ')" title="Remover" style="background:none;border:none;font-size:1.05rem;color:var(--danger);cursor:pointer;padding:2px;">🗑</button>' +
       '</div>' +
     '</div>';
@@ -9881,12 +9970,25 @@ async function leitorLoteEnviarTodos() {
   // (só mostra um aviso e para), e nada era salvo de verdade. Como todos
   // os itens do lote já foram "votados" pro mesmo livro/capítulo, usa o
   // do primeiro item pra configurar o formulário principal uma vez só.
+  // Mesmo livro já escolhido: não troca (trocar apagava os versos das linhas que já estavam lá)
   var selLivro = document.getElementById('recit-livro');
-  selLivro.value = String(itensValidos[0].livroIdx);
-  recitOnLivroChange();
-  var grid = document.getElementById('recit-cap-grid');
-  var btnCap = grid && Array.from(grid.children).find(function(b){ return b.textContent === String(itensValidos[0].capitulo); });
-  if (btnCap) btnCap.click();
+  if (_recitLivroIdx !== itensValidos[0].livroIdx) {
+    selLivro.value = String(itensValidos[0].livroIdx);
+    if (_recitOrdem.some(function(o){ return o.ref; })) {
+      // já tem linhas com versos: troca o livro sem limpar o que estava lá
+      _recitLivroIdx = itensValidos[0].livroIdx; _recitCapsSelected = [];
+      recitRenderCaps();
+      document.getElementById('recit-cap-group').style.display = 'block';
+      document.getElementById('recit-ordem-section').style.display = 'block';
+    } else recitOnLivroChange();
+  }
+  // Capítulo: só toca se ainda não estiver marcado (tocar de novo desmarcava)
+  var capLido = parseInt(itensValidos[0].capitulo, 10);
+  if (_recitCapsSelected.map(Number).indexOf(capLido) < 0) {
+    var grid = document.getElementById('recit-cap-grid');
+    var btnCap = grid && Array.from(grid.children).find(function(b){ return b.textContent === String(capLido); });
+    if (btnCap) btnCap.click();
+  }
 
   showToast('📋 Enviando ' + itensValidos.length + ' recitativo(s)...');
 
@@ -9894,6 +9996,8 @@ async function leitorLoteEnviarTodos() {
     var it = itensValidos[i];
     recitAdicionarLinha();
     var idx = _recitOrdem.length - 1;
+    var mLido = (it.membroId != null ? DB.members.find(function(m){ return String(m.id) === String(it.membroId) && m.nome === it.nome; }) : null) || _encontrarMembroPorNomeOcr(it.nome);
+    _recitOrdem[idx].membroId = mLido ? mLido.id : null;
     _recitOrdem[idx].membroNome = it.nome || ('Recitativo ' + (idx + 1));
     var versiculosArr = [it.capitulo + ':' + it.versoDe];
     _recitOrdem[idx].versiculos = versiculosArr;
@@ -9913,7 +10017,12 @@ async function leitorLoteEnviarTodos() {
     }
   }
   recitRenderOrdem();
-  showToast('✅ ' + itensValidos.length + ' recitativo(s) enviado(s) — confira e toque em "Salvar Recitativo".');
+  // Já salva (antes ficava só no formulário esperando "Salvar Recitativo" e se perdia)
+  if (!document.getElementById('recit-data').value) {
+    showToast('📅 Escolha a data da reunião e toque em "Salvar Recitativo".');
+    return;
+  }
+  await salvarRecitativo();
 }
 
 // ── Seleção manual de trecho, pra UM item específico do lote ──
@@ -14088,24 +14197,21 @@ function _glTentarIntencoes(t, original) {
 // enquanto ela só CONSULTA os dados do app — não cria, altera nem apaga nada.
 let _glorinhaHist = [];
 let _glorinhaPensando = false;
-// Ícone: ondas de voz azuis brilhando com um anel em órbita, fundo azul-noite
+// Ícone: ondas de voz + anel em órbita, desenho chapado nas cores do app (fundo branco)
 const GLORINHA_AVATAR = '<svg viewBox="0 0 64 64" width="100%" height="100%" aria-hidden="true">' +
-  '<defs>' +
-    '<radialGradient id="glFundo" cx="50%" cy="45%" r="70%"><stop offset="0" stop-color="#0c1f63"/><stop offset="1" stop-color="#020617"/></radialGradient>' +
-    '<linearGradient id="glBarra" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset=".15" stop-color="#67e8f9"/><stop offset="1" stop-color="#2563eb"/></linearGradient>' +
-    '<linearGradient id="glAnel" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#1d4ed8"/><stop offset=".65" stop-color="#7dd3fc"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>' +
-    '<filter id="glBrilho" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="1.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>' +
-  '</defs>' +
-  '<circle cx="32" cy="32" r="32" fill="url(#glFundo)"/>' +
-  '<path d="M9 34A23 9 0 0 1 55 34" transform="rotate(-24 32 34)" fill="none" stroke="url(#glAnel)" stroke-width="1.4" stroke-linecap="round" opacity=".5"/>' +
-  '<g filter="url(#glBrilho)" fill="url(#glBarra)">' +
-    '<rect x="17.6" y="26.5" width="4.4" height="10" rx="2.2"/>' +
-    '<rect x="23.8" y="22" width="4.4" height="19" rx="2.2"/>' +
-    '<rect x="29.8" y="15" width="4.4" height="33" rx="2.2"/>' +
-    '<rect x="35.8" y="22" width="4.4" height="19" rx="2.2"/>' +
-    '<rect x="42" y="26.5" width="4.4" height="10" rx="2.2"/>' +
+  '<defs><linearGradient id="glBarra" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs>' +
+  '<circle cx="32" cy="32" r="32" fill="#fff"/>' +
+  '<path d="M9 34A23 9 0 0 1 55 34" transform="rotate(-24 32 34)" fill="none" stroke="#c7d2fe" stroke-width="2.6" stroke-linecap="round"/>' +
+  '<g fill="url(#glBarra)">' +
+    '<rect x="17.4" y="26.5" width="5" height="10" rx="2.5"/>' +
+    '<rect x="23.6" y="22" width="5" height="19" rx="2.5"/>' +
+    '<rect x="29.5" y="15" width="5" height="33" rx="2.5"/>' +
+    '<rect x="35.4" y="22" width="5" height="19" rx="2.5"/>' +
+    '<rect x="41.6" y="26.5" width="5" height="10" rx="2.5"/>' +
   '</g>' +
-  '<path d="M9 34A23 9 0 0 0 55 34" transform="rotate(-24 32 34)" fill="none" stroke="url(#glAnel)" stroke-width="2.3" stroke-linecap="round" filter="url(#glBrilho)"/>' +
+  '<path d="M9 34A23 9 0 0 0 55 34" transform="rotate(-24 32 34)" fill="none" stroke="#fff" stroke-width="5.4" stroke-linecap="round"/>' +
+  '<path d="M9 34A23 9 0 0 0 55 34" transform="rotate(-24 32 34)" fill="none" stroke="#6366f1" stroke-width="2.8" stroke-linecap="round"/>' +
+  '<circle cx="53.2" cy="24.6" r="2.2" fill="#f59e0b"/>' +
   '</svg>';
 
 function abrirGlorinha() {
@@ -14166,7 +14272,13 @@ function _glorinhaResponder(r) {
 // O modelo não conhece a palavra "Glorinha": ele a ouve como "loirinha" (testado).
 const GL_VOSK_JS = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
 const GL_MODELO_URL = new URL('modelos/vosk-pt-pequeno.tar.gz', location.href).href;
-const GL_CHAMADO = new RegExp('(^|\\s)(' + GL_VARIANTES + ')(?=\\s|$|[,.!?:;])|^(a |o )?linha$', 'i');
+// O ouvido local muda o que ouve conforme a sílaba forte (testado com voz sintética):
+// tônica no "Gló" → "novinha", "gordinha", "glória na"; normal → "loirinha".
+// Estes só valem pro ouvido (não corrigem o texto dos comandos).
+const GL_VARIANTES_OUVIDO = GL_VARIANTES + '|novinha|gordinha|gl[oó]ria (na|nha|minha|ninha|rinha|linha|inha)|globo na|globo nha|loirinha linda|gl[oó]ria inha';
+const GL_CHAMADO = new RegExp('(^|\\s)(' + GL_VARIANTES_OUVIDO + ')(?=\\s|$|[,.!?:;])|^(a |o )?linha$', 'i');
+// "Glória" sozinha (frase inteira, já finalizada) também chama — mas não "glória a Deus"
+const GL_CHAMADO_FINAL = /^(o |a |oh |ó )?gl[oó]ria[!.]?$/i;
 const GL_CHAMADO_ORIGINAL = new RegExp('^[\\s\\S]*?(^|\\s)(' + GL_VARIANTES + ')(?=\\s|$|[,.!?:;])[\\s,!.]*', 'i');
 let _glOuvido = { rec: null, taxa: 0, stream: null, ctx: null, carregando: null, falhou: false, ultimo: 0 };
 
@@ -14265,7 +14377,9 @@ function _glOuvidoFechar() {
 function _glOuvidoOuviu(texto, final) {
   texto = String(texto || '').trim();
   if (!_glOuvido.stream || Date.now() - _glOuvido.abertoEm < 800) return;
-  if (!texto || !GL_CHAMADO.test(_glNorm(texto)) || Date.now() - _glOuvido.ultimo < 3000) return;
+  var n = _glNorm(texto);
+  var chamou = GL_CHAMADO.test(n) || (final && GL_CHAMADO_FINAL.test(n));
+  if (!texto || !chamou || Date.now() - _glOuvido.ultimo < 3000) return;
   _glOuvido.ultimo = Date.now();
   _glChamou();
 }

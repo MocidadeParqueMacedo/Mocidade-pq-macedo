@@ -593,7 +593,10 @@
         }
       } catch(e) { console.warn('Falha ao garantir reunião do próximo domingo:', e); }
       // Depois: lança a presença de recitativos já salvos que ainda não lançaram
-      setTimeout(function(){ if (typeof _recitSincronizarPresencas === 'function') _recitSincronizarPresencas().catch(function(e){ console.warn(e); }); }, 4000);
+      // (tenta de novo mais tarde: o login pode ainda não ter terminado de carregar)
+      [4000, 20000, 60000].forEach(function(ms){
+        setTimeout(function(){ if (typeof _recitSincronizarPresencas === 'function') _recitSincronizarPresencas().catch(function(e){ console.warn(e); }); }, ms);
+      });
     })();
     // Atualiza TODAS as abas de uma vez, logado ou anônimo — evita ficar
     // com informação desatualizada até o usuário abrir cada aba manualmente.
@@ -1367,7 +1370,7 @@
 <div id="top-fixo">
 <div class="header" style="position:relative;">
   <h1>🏛️ Reunião de Jovens</h1>
-  <div style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">build 2026-10-12-RELATORIO-PDF-V42</div>
+  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-07.2</div>
   <button id="btn-refresh-tudo" onclick="_forcarAtualizarTudo()" title="Atualizar tudo" style="position:absolute;top:12px;right:12px;background:rgba(255,255,255,.18);border:none;color:#fff;border-radius:50%;width:34px;height:34px;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;">🔄</button>
 </div>
 
@@ -6535,6 +6538,35 @@ function memberCardHTML(m) {
     </div>
     </div>`;
 }
+// ════════ ATUALIZAÇÃO AUTOMÁTICA ════════
+// O app aberto no celular continua com o código de quando foi aberto. Toda vez
+// que ele volta pra tela (e a cada 10 min), confere se saiu versão nova; se saiu,
+// recarrega sozinho — mas só quando não tem nenhuma tela/formulário aberto, pra
+// não perder nada que esteja sendo preenchido. MUDE ESTE NÚMERO A CADA PUBLICAÇÃO.
+const APP_VERSAO = '2026-11-07.2';
+let _versaoNovaPendente = false;
+async function _verificarVersaoNova() {
+  if (!navigator.onLine || location.protocol === 'file:') return;
+  try {
+    var r = await fetch(location.pathname + '?versao=' + Date.now(), { cache: 'no-store' });
+    var m = (await r.text()).match(/const APP_VERSAO = '([^']+)'/);
+    if (m && m[1] !== APP_VERSAO) _versaoNovaPendente = true;
+  } catch(e) {}
+  _aplicarVersaoNova();
+}
+function _aplicarVersaoNova() {
+  if (!_versaoNovaPendente) return;
+  var ocupado = document.querySelector('.modal-overlay.open') ||
+    (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) ||
+    (typeof _glorinhaReconhecimento !== 'undefined' && _glorinhaReconhecimento);
+  if (ocupado) { setTimeout(_aplicarVersaoNova, 15000); return; } // espera terminar o que está fazendo
+  showToast('🔄 Atualizando o app para a versão nova…');
+  setTimeout(function(){ location.reload(); }, 1200);
+}
+document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') _verificarVersaoNova(); });
+setInterval(_verificarVersaoNova, 10 * 60 * 1000);
+setTimeout(_verificarVersaoNova, 20000);
+
 // ════════ BACKUP (aba ADM) ════════
 // Busca tudo direto do banco (não do cache do aparelho) e baixa um arquivo .json.
 async function baixarBackup() {
@@ -11319,6 +11351,11 @@ async function _recitLancarPresenca(data, ordem) {
 function _dataLocalDe(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 async function _recitSincronizarPresencas() {
   if (typeof _autenticado === 'undefined' || !_autenticado || !window.FB || !window.FB.read) return;
+  if (window._recitSyncRodando) return;
+  window._recitSyncRodando = true;
+  try { await _recitSincronizarPresencasAgora(); } finally { window._recitSyncRodando = false; }
+}
+async function _recitSincronizarPresencasAgora() {
   await _fbLoadVersinhos();
   var vs = DB.versinhos;
   var pend = vs.filter(function(v){ return v && v.data && v.criadoEm && !v.presencaAplicada && _dataLocalDe(v.criadoEm) >= v.data && v.data <= todayISO(); });

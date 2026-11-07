@@ -592,6 +592,8 @@
           if (typeof renderEventosList === 'function') try { renderEventosList(); } catch(e){}
         }
       } catch(e) { console.warn('Falha ao garantir reunião do próximo domingo:', e); }
+      // Depois: lança a presença de recitativos já salvos que ainda não lançaram
+      setTimeout(function(){ if (typeof _recitSincronizarPresencas === 'function') _recitSincronizarPresencas().catch(function(e){ console.warn(e); }); }, 4000);
     })();
     // Atualiza TODAS as abas de uma vez, logado ou anônimo — evita ficar
     // com informação desatualizada até o usuário abrir cada aba manualmente.
@@ -5019,6 +5021,25 @@ async function excluirVisitante(vid) {
   await _fbSaveVisitors(allVisitors);
   renderPresencaChamada();
   showToast('🗑 Visitante removido');
+  _tirarVisitanteDosRecitativos(vid).catch(function(e){ console.warn(e); });
+}
+// Visitante apagado: as linhas de recitativo em que ele estava ficam "sem membro"
+async function _tirarVisitanteDosRecitativos(vid) {
+  await _fbLoadVersinhos();
+  var vs = DB.versinhos, mudou = false, prefixo = 'vp_' + vid + '__';
+  vs.forEach(function(v){ (v.ordem || []).forEach(function(o){
+    if (o.membroId && String(o.membroId).indexOf(prefixo) === 0) { o.membroId = null; o.membroNome = ''; mudou = true; }
+  }); });
+  if (!mudou) return;
+  localStorage.setItem('rj_versinhos', JSON.stringify(vs));
+  if (window.FB && window.FB.write) await window.FB.write('app/versinhos', vs);
+  if (typeof _vsDetalheMeetingDate !== 'undefined' && _vsDetalheMeetingDate && typeof _vsRenderDetalheNow === 'function') _vsRenderDetalheNow(_vsDetalheMeetingDate);
+}
+// O visitante dessa linha de recitativo ainda existe? (apagado antes desta correção = não mostra)
+function _visitanteDaLinhaExiste(membroId) {
+  var m = String(membroId || '').match(/^vp_(.+)__\d+$/);
+  if (!m) return true;
+  return Object.values(DB.visitors || {}).some(function(arr){ return (arr || []).some(function(v){ return String(v.id) === m[1]; }); });
 }
 
 function renderPresencaChamada() {
@@ -8215,7 +8236,7 @@ function _vsRenderDetalheNow(data) {
     (v.ordem||[]).forEach(function(o, idx) {
       todosOrdem.push({
         posicao: todosOrdem.length + 1,
-        membroNome: o.membroNome || '—',
+        membroNome: (_visitanteDaLinhaExiste(o.membroId) && o.membroNome) || '—',
         livroNome: livro.nome || '',
         capStr: capStr,
         ref: o.ref || '',
@@ -8269,8 +8290,18 @@ function _vsRenderDetalheNow(data) {
 function vsAbrirCardRecitativo(idx) {
   var o = (window._vsOrdemCards || [])[idx];
   if (!o) return;
+  // Sem o texto escrito (só "2:1"): busca o versículo antes de mostrar o cartão
+  if (!o.trecho && !o.versoCompleto && o.versiculos && o.versiculos.length && !o._buscouTexto) {
+    o._buscouTexto = true;
+    showToast('📖 Buscando o versículo…');
+    _buscarTextoCompletoVersiculos(o.livroNome, o.versiculos).then(function(tx) {
+      if (tx) o.versoCompleto = tx;
+      vsAbrirCardRecitativo(idx);
+    });
+    return;
+  }
 
-  var versoTexto = o.trecho || o.versoCompleto || (o.versiculos && o.versiculos.length ? o.versiculos.join('\n') : '');
+  var versoTexto = o.trecho || o.versoCompleto ||(o.versiculos && o.versiculos.length ? o.versiculos.join('\n') : '');
   var dateParts  = o.meetingDate ? o.meetingDate.split('-') : ['','',''];
   var dateDisplay = dateParts.length===3 ? dateParts[2]+' / '+dateParts[1]+' / '+dateParts[0] : (o.meetingDate||'');
 
@@ -8542,6 +8573,7 @@ function recitRenderOrdem() {
       .map(function(m){ return '<option value="' + m.id + '">' + m.nome + '</option>'; }).join('');
 
   lista.innerHTML = _recitOrdem.map(function(o, idx){
+    if (!_visitanteDaLinhaExiste(o.membroId)) { o.membroId = null; o.membroNome = ''; } // visitante apagado no histórico
     var trechoHtml = o.trecho
       ? '<div style="font-size:.72rem;font-style:italic;color:var(--primary);margin-top:2px;background:#eef2ff;border-radius:6px;padding:3px 6px;">✂️ &ldquo;' + o.trecho.substring(0,60) + (o.trecho.length>60?'...&rdquo;':' &rdquo;') + '</div>'
       : '';
@@ -8611,7 +8643,11 @@ async function recitEditarMembro(idx) {
   // já que um registro de visitante pode representar várias pessoas.
   var visitantesMatch = [];
   var vistos = {};
-  Object.values(DB.visitors || {}).forEach(function(arr) {
+  // Visitante é só daquele dia: aparece apenas no recitativo da MESMA data da reunião em que foi lançado
+  var dataRecit = (document.getElementById('recit-data') || {}).value || '';
+  var chavesDoDia = {};
+  DB.meetings.forEach(function(mt){ if (mt.date === dataRecit) { chavesDoDia[String(mt.id || mt.date)] = true; chavesDoDia[String(mt.date)] = true; } });
+  Object.keys(DB.visitors || {}).filter(function(k){ return chavesDoDia[k]; }).map(function(k){ return DB.visitors[k]; }).forEach(function(arr) {
     (arr || []).forEach(function(v) {
       if (v.genero === _vsGeneroAtual && String(v.cont) === String(_vsContAtual) && !vistos[v.id]) {
         vistos[v.id] = true;
@@ -8625,7 +8661,7 @@ async function recitEditarMembro(idx) {
     });
   });
   if (visitantesMatch.length) {
-    opcoesHtml += '<optgroup label="👤 Visitantes desta continuação">' +
+    opcoesHtml += '<optgroup label="👤 Visitantes desta reunião (' + formatDate(dataRecit) + ')">' +
       visitantesMatch.map(function(vp){
         var valorOpcao = 'vp_' + vp.id + '__' + vp.posicao;
         var label = '👤 ' + vp.nomeExibido + ' (' + vp.comum + ')';
@@ -9997,7 +10033,7 @@ async function leitorLoteEnviarTodos() {
     recitAdicionarLinha();
     var idx = _recitOrdem.length - 1;
     var mLido = (it.membroId != null ? DB.members.find(function(m){ return String(m.id) === String(it.membroId) && m.nome === it.nome; }) : null) || _encontrarMembroPorNomeOcr(it.nome);
-    _recitOrdem[idx].membroId = mLido ? mLido.id : null;
+    _recitOrdem[idx].membroId = mLido ? 'm_' + mLido.id : null;
     _recitOrdem[idx].membroNome = it.nome || ('Recitativo ' + (idx + 1));
     var versiculosArr = [it.capitulo + ':' + it.versoDe];
     _recitOrdem[idx].versiculos = versiculosArr;
@@ -10042,13 +10078,8 @@ async function leitorLoteAbrirSelecaoTexto(idx) {
   if (item.trechoSelecionado) document.getElementById('lote-sel-trecho-preview').textContent = '"' + item.trechoSelecionado + '"';
 
   try {
-    var livro = ARC_LIVROS[item.livroIdx];
-    var url = 'https://bible-api.com/' + encodeURIComponent(livro.nome + ' ' + item.capitulo) + '?translation=almeida';
-    var resp = await fetch(url);
-    if (!resp.ok) throw new Error('Erro na API');
-    var data = await resp.json();
-    var textoFinal = (data.verses || []).map(function(v){
-      return '<span style="color:var(--primary);font-weight:700;">' + v.verse + '</span> ' + v.text.trim();
+    var textoFinal = (await _bibliaCapitulo(item.livroIdx, item.capitulo)).map(function(v){
+      return '<span style="color:var(--primary);font-weight:700;">' + v.verse + '</span> ' + v.text;
     }).join(' ');
     if (!textoFinal) throw new Error('Texto não encontrado');
 
@@ -11006,29 +11037,49 @@ function leitorRecitEscolherModo(modo) {
   }, 150);
 }
 
+// ── Texto da Bíblia (Almeida Revista e Corrigida) ──
+// Fonte: bolls.life (gratuita). A antiga (bible-api.com) tirou a Almeida do ar e
+// devolvia erro — por isso os cartões mostravam só "2:1" em vez do versículo.
+const _bibliaCache = {};
+async function _bibliaCapitulo(livroIdx, cap) {
+  var chave = livroIdx + ':' + cap;
+  if (_bibliaCache[chave]) return _bibliaCache[chave];
+  var resp = await fetch('https://bolls.life/get-text/ARC09/' + (livroIdx + 1) + '/' + cap + '/');
+  if (!resp.ok) throw new Error('Bíblia indisponível (' + resp.status + ')');
+  var lista = await resp.json();
+  if (!Array.isArray(lista) || !lista.length) throw new Error('capítulo não encontrado');
+  var versos = lista.map(function(v) {
+    var tx = String(v.text || '')
+      .replace(/<sup>[\s\S]*?<\/sup>/gi, '')  // notas de rodapé [1]
+      .replace(/^\s*<b>[\s\S]*?<\/b>\s*/i, '') // título do salmo ("Salmo de Davi")
+      .replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    return { verse: v.verse, text: tx };
+  });
+  _bibliaCache[chave] = versos;
+  return versos;
+}
+function _livroIdxPorNome(nome) {
+  var n = String(nome || '').toLowerCase();
+  return ARC_LIVROS.findIndex(function(l){ return l.nome.toLowerCase() === n; });
+}
 async function _buscarTextoCompletoVersiculos(nomeLivro, versiculosArr) {
   if (!versiculosArr || !versiculosArr.length) return '';
+  var livroIdx = typeof nomeLivro === 'number' ? nomeLivro : _livroIdxPorNome(nomeLivro);
+  if (livroIdx < 0) return '';
   var porCap = {};
   versiculosArr.forEach(function(cv){
-    var p = cv.split(':');
+    var p = String(cv).split(':');
     if (!porCap[p[0]]) porCap[p[0]] = [];
     porCap[p[0]].push(parseInt(p[1]));
   });
   var textoFinal = '';
   var caps = Object.keys(porCap).sort(function(a,b){return a-b;});
   for (var ci = 0; ci < caps.length; ci++) {
-    var cap = caps[ci];
-    var vers = porCap[cap].sort(function(a,b){return a-b;});
+    var vers = porCap[caps[ci]];
     try {
-      var url = 'https://bible-api.com/' + encodeURIComponent(nomeLivro + ' ' + cap) + '?translation=almeida';
-      var resp = await fetch(url);
-      if (!resp.ok) continue;
-      var data = await resp.json();
-      if (data.verses) {
-        data.verses.forEach(function(v){
-          if (vers.indexOf(v.verse) >= 0) textoFinal += v.text.trim() + ' ';
-        });
-      }
+      (await _bibliaCapitulo(livroIdx, caps[ci])).forEach(function(v){
+        if (vers.indexOf(v.verse) >= 0) textoFinal += v.text + ' ';
+      });
     } catch(e) { console.warn('Falha ao buscar texto completo do versículo:', e); }
   }
   return textoFinal.trim();
@@ -11064,22 +11115,12 @@ async function recitBuscarTexto() {
       var cap = caps[ci];
       var vers = porCap[cap].sort(function(a,b){return a-b;});
 
-      // Busca capítulo inteiro e filtra versículos
-      var url = 'https://bible-api.com/' +
-        encodeURIComponent(nomeApi + ' ' + cap) +
-        '?translation=almeida';
-
-      var resp = await fetch(url);
-      if (!resp.ok) throw new Error('Erro na API');
-      var data = await resp.json();
-
-      if (data.verses) {
-        data.verses.forEach(function(v){
-          if (vers.indexOf(v.verse) >= 0) {
-            textoFinal += '<span class="arc-ver-num">' + v.verse + '</span> ' + v.text.trim() + ' ';
-          }
-        });
-      }
+      // Busca o capítulo inteiro (Almeida Revista e Corrigida) e filtra os versículos
+      (await _bibliaCapitulo(_recitLivroIdx, cap)).forEach(function(v){
+        if (vers.indexOf(v.verse) >= 0) {
+          textoFinal += '<span class="arc-ver-num">' + v.verse + '</span> ' + v.text + ' ';
+        }
+      });
     }
 
     if (!textoFinal) throw new Error('Texto não encontrado');
@@ -11246,7 +11287,9 @@ async function _recitLancarPresenca(data, ordem) {
   var ids = [];
   (ordem || []).forEach(function(o) {
     if (o.membroId == null || o.membroId === '') return;
-    var m = DB.members.find(function(x){ return String(x.id) === String(o.membroId); }); // só membros ativos (visitante não)
+    // a linha guarda o membro como "m_<id>" (escolhido à mão) ou só "<id>"; visitante é "vp_..." e não conta
+    var mid = String(o.membroId).replace(/^m_/, '');
+    var m = DB.members.find(function(x){ return String(x.id) === mid; }); // só membros ativos
     if (m && ids.indexOf(String(m.id)) < 0) ids.push(String(m.id));
   });
   if (!ids.length) return 0;
@@ -11268,6 +11311,26 @@ async function _recitLancarPresenca(data, ordem) {
   if (typeof renderHistorico === 'function') { try { renderHistorico(); renderStats(); } catch(e) {} }
   registrarAtividade('lançou ' + novos + ' presença(s) pelo recitativo de ' + formatDate(data));
   return novos;
+}
+
+// Recitativos já salvos no dia da reunião (ou depois) que ainda não lançaram a
+// presença de quem recitou: lança uma vez e marca "presencaAplicada" no recitativo,
+// pra não lançar de novo (nem desfazer se alguém tirar a presença na chamada depois).
+function _dataLocalDe(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+async function _recitSincronizarPresencas() {
+  if (typeof _autenticado === 'undefined' || !_autenticado || !window.FB || !window.FB.read) return;
+  await _fbLoadVersinhos();
+  var vs = DB.versinhos;
+  var pend = vs.filter(function(v){ return v && v.data && v.criadoEm && !v.presencaAplicada && _dataLocalDe(v.criadoEm) >= v.data && v.data <= todayISO(); });
+  if (!pend.length) return;
+  var total = 0;
+  for (var i = 0; i < pend.length; i++) {
+    try { total += await _recitLancarPresenca(pend[i].data, pend[i].ordem); pend[i].presencaAplicada = true; }
+    catch(e) { console.warn('Presença do recitativo', pend[i].id, e); }
+  }
+  localStorage.setItem('rj_versinhos', JSON.stringify(vs));
+  try { await window.FB.write('app/versinhos', vs); } catch(e) { console.warn(e); }
+  if (total) console.log('✅ Presença lançada pelos recitativos já salvos: ' + total);
 }
 
 async function salvarRecitativo() {
@@ -11314,7 +11377,8 @@ async function salvarRecitativo() {
     auxiliarId: auxId || null,
     auxiliarNome: auxNome || '',
     ordem: ordemComTexto,
-    criadoEm: new Date().toISOString()
+    criadoEm: new Date().toISOString(),
+    presencaAplicada: todayISO() >= data // no dia ou depois: a presença é lançada logo abaixo
   };
 
   // Busca lista atual do Firebase

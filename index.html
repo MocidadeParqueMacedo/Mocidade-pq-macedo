@@ -666,6 +666,11 @@
         localStorage.setItem('rj_visitas_comuns', JSON.stringify(arr));
         if (typeof renderVisitasComuns === 'function') { try { renderVisitasComuns(); } catch(e){} }
       });
+      window._fbOnValue(window._fbRef(window._rtdb, 'app/continuacoes'), (snap) => {
+        if (snap.exists()) localStorage.setItem('rj_continuacoes', JSON.stringify(snap.val()));
+        else localStorage.removeItem('rj_continuacoes');
+        if (typeof renderConfigContinuacoes === 'function') { try { renderConfigContinuacoes(); } catch(e){} }
+      });
       window._fbOnValue(window._fbRef(window._rtdb, 'app/comuns_status'), (snap) => {
         const val = snap.exists() ? snap.val() : {};
         localStorage.setItem('rj_comuns_status', JSON.stringify(val && typeof val === 'object' ? val : {}));
@@ -677,12 +682,14 @@
         localStorage.setItem('rj_meetings', JSON.stringify(arr));
         if (typeof renderHistorico === 'function') { try { renderHistorico(); } catch(e){} }
         if (typeof renderStats === 'function') { try { renderStats(); } catch(e){} }
+        if (typeof _presencaAtualizarDoServidor === 'function') { try { _presencaAtualizarDoServidor(); } catch(e){} }
       });
       window._fbOnValue(window._fbRef(window._rtdb, 'app/visitors'), (snap) => {
         const val = snap.exists() ? snap.val() : {};
         if (typeof val === 'object') {
           localStorage.setItem('rj_visitors', JSON.stringify(val));
           if (typeof renderHistorico === 'function') { try { renderHistorico(); } catch(e){} }
+          if (typeof _presencaAtualizarDoServidor === 'function') { try { _presencaAtualizarDoServidor(); } catch(e){} }
         }
       });
       window._fbOnValue(window._fbRef(window._rtdb, 'app/versinhos'), (snap) => {
@@ -786,26 +793,59 @@
 
   /* ══ TEMA ESCURO ══ */
   body.tema-escuro {
-    --primary: #818cf8;
+    --primary: #8b93ff;
     --primary-light: #a5b4fc;
-    --primary-dark: #6366f1;
-    --accent: #f59e0b;
-    --bg: #0f172a;
-    --card: #1e293b;
-    --text: #f1f5f9;
+    --primary-dark: #4f46e5;
+    --accent: #fbbf24;
+    --bg: #0b1120;
+    --card: #141c2f;
+    --text: #e5e9f2;
     --text-muted: #94a3b8;
-    --border: #334155;
-    --success: #22c55e;
-    --danger: #ef4444;
+    --border: #26314b;
+    --success: #34d399;
+    --danger: #f87171;
+    --shadow: 0 4px 18px rgba(0,0,0,.45);
+    --campo: #0f1729;
+    color-scheme: dark;
   }
+  /* Cabeçalho, barra de abas e cartões: camadas bem separadas do fundo */
+  body.tema-escuro .header { background: linear-gradient(135deg, #1e1b4b, #312e81 55%, #4338ca); box-shadow: 0 2px 14px rgba(0,0,0,.55); }
+  body.tema-escuro #top-fixo, body.tema-escuro .nav { background: #10182b; border-color: var(--border); }
+  body.tema-escuro .nav-btn.active { color: var(--primary-light); border-bottom-color: var(--primary); }
+  body.tema-escuro .card, body.tema-escuro .stat-card, body.tema-escuro .member-item,
+  body.tema-escuro .menu-card, body.tema-escuro .submenu-opt, body.tema-escuro .vs-cont-btn { border: 1px solid var(--border); }
+  body.tema-escuro .stat-value { color: var(--primary-light); }
+  body.tema-escuro .modal { background: var(--card); border-top: 1px solid var(--border); }
+  body.tema-escuro .modal-overlay { background: rgba(2,6,23,.72); }
+  body.tema-escuro .btn-primary { background: #6366f1; color: #fff; }
+  body.tema-escuro .btn-primary:hover { background: #4f46e5; }
+  body.tema-escuro .btn-secondary { background: rgba(129,140,248,.08); color: var(--primary-light); border-color: rgba(129,140,248,.45); }
+  body.tema-escuro .vs-cont-btn:hover, body.tema-escuro .vs-cont-btn.active { background: rgba(251,191,36,.12); color: #fcd34d; border-color: #fbbf24; }
+  /* Cores claras fixas no código → versões escuras */
+  body.tema-escuro [style*="background:#eef2ff"], body.tema-escuro [style*="background: #eef2ff"],
+  body.tema-escuro [style*="background:#e0e7ff"] { background: rgba(99,102,241,.16) !important; }
+  body.tema-escuro [style*="background:#fffbeb"], body.tema-escuro [style*="background:#fef3c7"],
+  body.tema-escuro [style*="background:#fef9c3"] { background: rgba(251,191,36,.13) !important; }
+  body.tema-escuro [style*="background:#fee2e2"], body.tema-escuro [style*="background:#fef2f2"] { background: rgba(248,113,113,.15) !important; }
+  body.tema-escuro [style*="background:#dcfce7"], body.tema-escuro [style*="background:#d1fae5"] { background: rgba(52,211,153,.15) !important; }
+  body.tema-escuro [style*="background:#eff6ff"] { background: rgba(96,165,250,.15) !important; }
+  body.tema-escuro [style*="background:#f1f5f9"], body.tema-escuro [style*="background:#f8fafc"] { background: var(--campo) !important; }
+  body.tema-escuro [style*="color:#78350f"], body.tema-escuro [style*="color:#451a03"], body.tema-escuro [style*="color:#d97706"] { color: #fcd34d !important; }
+  body.tema-escuro [style*="color:#166534"], body.tema-escuro [style*="color:#065f46"] { color: #6ee7b7 !important; }
+  body.tema-escuro [style*="color:#991b1b"], body.tema-escuro [style*="color:#dc2626"] { color: #fca5a5 !important; }
+  body.tema-escuro [style*="color:#1e293b"]:not(.leaflet-popup-content *), body.tema-escuro [style*="color:#0f172a"]:not(.leaflet-popup-content *),
+  body.tema-escuro [style*="color:#334155"]:not(.leaflet-popup-content *) { color: var(--text) !important; }
+  body.tema-escuro ::-webkit-scrollbar { width: 8px; height: 8px; }
+  body.tema-escuro ::-webkit-scrollbar-thumb { background: #2a3653; border-radius: 8px; }
   body.tema-escuro input,
   body.tema-escuro select,
   body.tema-escuro textarea {
-    background: var(--bg);
+    background: var(--campo);
     color: var(--text);
-    border-color: var(--border);
+    border-color: #2a3653;
     color-scheme: dark;
   }
+  body.tema-escuro input:focus, body.tema-escuro select:focus, body.tema-escuro textarea:focus { background: #18223a; border-color: var(--primary); }
   body.tema-escuro input::placeholder,
   body.tema-escuro textarea::placeholder {
     color: var(--text-muted);
@@ -1370,8 +1410,8 @@
 <div id="top-fixo">
 <div class="header" style="position:relative;">
   <h1>🏛️ Reunião de Jovens</h1>
-  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-07.2</div>
-  <button id="btn-refresh-tudo" onclick="_forcarAtualizarTudo()" title="Atualizar tudo" style="position:absolute;top:12px;right:12px;background:rgba(255,255,255,.18);border:none;color:#fff;border-radius:50%;width:34px;height:34px;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;">🔄</button>
+  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-07.3</div>
+
 </div>
 
 <div class="stats">
@@ -1558,24 +1598,12 @@
       <!-- Sub-filtros: continuações Irmãos -->
       <div id="pres-sub-irmaos" style="display:none;margin-bottom:8px;">
         <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:5px;letter-spacing:.3px;">CONTINUAÇÃO — IRMÃOS</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button id="pres-sub-M-todos" class="btn btn-primary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('M','todos')">Todas</button>
-          <button id="pres-sub-M-1"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('M','1')">1ª</button>
-          <button id="pres-sub-M-2"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('M','2')">2ª</button>
-          <button id="pres-sub-M-3"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('M','3')">3ª</button>
-        </div>
+        <div id="pres-sub-M-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
       </div>
       <!-- Sub-filtros: continuações Irmãs -->
       <div id="pres-sub-irmas" style="display:none;margin-bottom:8px;">
         <div style="font-size:.72rem;font-weight:700;color:var(--text-muted);margin-bottom:5px;letter-spacing:.3px;">CONTINUAÇÃO — IRMÃS</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button id="pres-sub-F-todos" class="btn btn-primary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('F','todos')">Todas</button>
-          <button id="pres-sub-F-1"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('F','1')">1ª</button>
-          <button id="pres-sub-F-2"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('F','2')">2ª</button>
-          <button id="pres-sub-F-3"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('F','3')">3ª</button>
-          <button id="pres-sub-F-4"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('F','4')">4ª</button>
-          <button id="pres-sub-F-5"     class="btn btn-secondary btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('F','5')">5ª</button>
-        </div>
+        <div id="pres-sub-F-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
       </div>
 
       <div id="presenca-tab-chamada">
@@ -1727,27 +1755,13 @@
 
   <div class="submenu" id="sub-irmaos">
     <div class="submenu-title"><button class="back-btn" onclick="closeSubmenu()">← Voltar</button> 👨 Irmãos</div>
-    <div class="submenu-options">
-      <div class="submenu-opt" onclick="showContGroup('irmaos','1')">1ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmaos','2')">2ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmaos','3')">3ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmaos','mocos')">🧑 Moços</div>
-      <div class="submenu-opt" onclick="showContGroup('irmaos','meninos')">🧒 Meninos</div>
-    </div>
+    <div class="submenu-options" id="sub-irmaos-opcoes"></div>
     <div id="irmaos-list-result"></div>
   </div>
 
   <div class="submenu" id="sub-irmas">
     <div class="submenu-title"><button class="back-btn" onclick="closeSubmenu()">← Voltar</button> 👩 Irmãs</div>
-    <div class="submenu-options">
-      <div class="submenu-opt" onclick="showContGroup('irmas','1')">1ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmas','2')">2ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmas','3')">3ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmas','4')">4ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmas','5')">5ª Continuação</div>
-      <div class="submenu-opt" onclick="showContGroup('irmas','mocas')">👩 Moças</div>
-      <div class="submenu-opt" onclick="showContGroup('irmas','meninas')">👧 Meninas</div>
-    </div>
+    <div class="submenu-options" id="sub-irmas-opcoes"></div>
     <div id="irmas-list-result"></div>
   </div>
 
@@ -1901,9 +1915,7 @@
 <div class="section" id="sec-admin">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div style="font-size:1rem;font-weight:800;color:var(--primary);">⚙️ Painel do Administrador</div>
-    <button id="btn-admin-refresh" onclick="adminRefresh()" style="background:var(--bg);border:1.5px solid var(--border);color:var(--primary);border-radius:10px;padding:6px 12px;font-size:.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:5px;">
-      <span id="refresh-icon">🔄</span> Atualizar
-    </button>
+    <span style="font-size:.7rem;color:var(--text-muted);display:flex;align-items:center;gap:5px;"><span style="width:7px;height:7px;border-radius:50%;background:var(--success);display:inline-block;"></span> ao vivo</span>
   </div>
 
   <!-- Pendentes -->
@@ -1916,6 +1928,19 @@
   <div class="card">
     <div class="card-title">👥 Todos os Usuários</div>
     <div id="admin-todos-lista"></div>
+  </div>
+
+  <!-- Continuações -->
+  <div class="card" style="margin-top:14px;">
+    <div class="card-title">🔢 Continuações</div>
+    <div style="font-size:.78rem;color:var(--text-muted);line-height:1.5;margin-bottom:10px;">Quantas continuações existem de irmãos e de irmãs. Muda no app inteiro <b>a partir da data escolhida</b> — os dias anteriores continuam como estavam (recitativos e presenças antigos não somem).</div>
+    <div class="form-row">
+      <div class="form-group"><label>👨 Irmãos</label><input type="number" id="cont-cfg-M" min="1" max="20" inputmode="numeric"/></div>
+      <div class="form-group"><label>👩 Irmãs</label><input type="number" id="cont-cfg-F" min="1" max="20" inputmode="numeric"/></div>
+    </div>
+    <div class="form-group"><label>📅 Vale a partir de</label><input type="date" id="cont-cfg-desde"/></div>
+    <button class="btn btn-primary btn-full" onclick="salvarConfigContinuacoes()">💾 Salvar continuações</button>
+    <div id="cont-cfg-historico" style="font-size:.74rem;color:var(--text-muted);margin-top:10px;line-height:1.6;"></div>
   </div>
 
   <!-- Backup -->
@@ -2108,6 +2133,11 @@
       <div id="cm-mapa" style="height:62vh;min-height:320px;border-radius:12px;overflow:hidden;border:1px solid var(--border);background:var(--bg);"></div>
       <div id="cm-legenda" style="display:flex;gap:12px;flex-wrap:wrap;font-size:.75rem;margin-top:8px;color:var(--text);"></div>
       <div id="cm-info" style="font-size:.72rem;color:var(--text-muted);margin-top:6px;line-height:1.4;"></div>
+      <div style="margin-top:10px;padding:9px 11px;border-radius:10px;background:#eef2ff;font-size:.72rem;line-height:1.5;color:var(--text);">
+        ℹ️ <b>Sobre os dados:</b> os nomes das comuns, endereços e dias e horários de culto mostrados aqui foram retirados do site
+        <a href="https://congregacoes.com.br" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;">congregacoes.com.br</a>,
+        que é o autor dessas informações. É um site independente e colaborativo — não é o relatório oficial da CCB — então pode haver diferenças. O mapa é do OpenStreetMap.
+      </div>
     </div>
     <div class="card">
       <div class="card-title" style="font-size:.85rem;margin-bottom:10px;">✅ Comuns que nos visitaram — marque as que já visitamos</div>
@@ -3577,6 +3607,43 @@ function trocarSenha() {
 function renderAdminPainel() {
   renderAdminPendentes();
   renderAdminTodos();
+  renderConfigContinuacoes();
+}
+
+// ── Continuações (aba ADM) ──
+function renderConfigContinuacoes() {
+  var iM = document.getElementById('cont-cfg-M'), iF = document.getElementById('cont-cfg-F'), iD = document.getElementById('cont-cfg-desde');
+  if (!iM) return;
+  if (document.activeElement !== iM && document.activeElement !== iF) { iM.value = contMaxEm('M'); iF.value = contMaxEm('F'); }
+  if (!iD.value) iD.value = todayISO();
+  var h = _contHistorico();
+  document.getElementById('cont-cfg-historico').innerHTML = '<b>Histórico:</b><br>' + h.map(function(c, i) {
+    var ate = h[i + 1] ? ' até ' + formatDate(_diaAnterior(h[i + 1].desde)) : ' em diante';
+    return (c.desde <= '2000-01-01' ? 'Desde o início' : 'De ' + formatDate(c.desde)) + ate + ': <b>' + c.M + '</b> de irmãos · <b>' + c.F + '</b> de irmãs';
+  }).join('<br>');
+}
+function _diaAnterior(iso) { var d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() - 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+async function salvarConfigContinuacoes() {
+  if (!_isAdmin) { showToast('Só o administrador pode mudar'); return; }
+  var M = parseInt(document.getElementById('cont-cfg-M').value, 10), F = parseInt(document.getElementById('cont-cfg-F').value, 10);
+  var desde = document.getElementById('cont-cfg-desde').value || todayISO();
+  if (!(M >= 1 && M <= 20 && F >= 1 && F <= 20)) { showToast('Use um número de 1 a 20'); return; }
+  var h = _contHistorico();
+  try { var srv = window.FB && window.FB.read ? await window.FB.read('app/continuacoes') : null; if (srv && Array.isArray(srv.historico) && srv.historico.length) h = srv.historico.slice(); } catch(e) {}
+  if (h.length === 1 && h[0].desde === '2000-01-01' && desde > '2000-01-01') { /* mantém o "desde o início" com 3 e 5 */ }
+  h = h.filter(function(c){ return c.desde !== desde; });
+  h.push({ desde: desde, M: M, F: F, por: _userName || '', em: new Date().toISOString() });
+  h.sort(function(a, b){ return String(a.desde).localeCompare(String(b.desde)); });
+  // tira repetições seguidas (mesma quantidade que o período anterior)
+  h = h.filter(function(c, i){ return i === 0 || c.M !== h[i - 1].M || c.F !== h[i - 1].F; });
+  var dados = { historico: h };
+  localStorage.setItem('rj_continuacoes', JSON.stringify(dados));
+  try { if (window.FB && window.FB.write) await window.FB.write('app/continuacoes', dados); }
+  catch(e) { showToast('⚠️ Não consegui salvar — confira a internet'); return; }
+  renderConfigContinuacoes();
+  showToast('✅ A partir de ' + formatDate(desde) + ': ' + M + ' de irmãos e ' + F + ' de irmãs');
+  registrarAtividade('mudou as continuações para ' + M + ' (irmãos) e ' + F + ' (irmãs) a partir de ' + formatDate(desde));
+  if (typeof window._redesenharTudo === 'function') window._redesenharTudo();
 }
 
 async function adminRefresh() {
@@ -3738,6 +3805,39 @@ function alternarDesabilitado(i) {
 // Nav com autenticação para abas restritas (mantido para compatibilidade)
 function navComAuth(id, btn) { exigirAuth(() => showSection(id, btn), btn); }
 function abrirModalEventoComAuth() { exigirAuth(() => abrirModalEvento()); }
+
+// ════════ CONTINUAÇÕES (quantas há de irmãos e de irmãs, por data) ════════
+// Fica em app/continuacoes: { historico: [{ desde: 'AAAA-MM-DD', M: 3, F: 5 }, ...] }.
+// Cada mudança vale a partir da data dela; dias anteriores continuam com a
+// quantidade antiga (não some recitativo nem presença já lançados). Continuação
+// que ainda tem membro/recitativo continua aparecendo mesmo se a quantidade diminuir.
+const _ORD = Array.from({ length: 31 }, function(_, i){ return i ? i + 'ª' : ''; });
+function _contHistorico() {
+  try {
+    var h = JSON.parse(localStorage.getItem('rj_continuacoes') || 'null');
+    if (h && Array.isArray(h.historico) && h.historico.length) return h.historico.slice().sort(function(a, b){ return String(a.desde).localeCompare(String(b.desde)); });
+  } catch(e) {}
+  return [{ desde: '2000-01-01', M: 3, F: 5 }];
+}
+function contMaxEm(genero, dataISO) {
+  var d = dataISO || todayISO(), h = _contHistorico(), cfg = h[0];
+  h.forEach(function(c){ if (String(c.desde) <= d) cfg = c; });
+  var n = parseInt(cfg[genero === 'F' ? 'F' : 'M'], 10);
+  return n > 0 ? n : (genero === 'F' ? 5 : 3);
+}
+// 1..N daquela data + continuações que ainda têm dados (extras)
+function contListaEm(genero, dataISO, extras) {
+  var s = {}, n = contMaxEm(genero, dataISO);
+  for (var i = 1; i <= n; i++) s[i] = true;
+  (extras || []).forEach(function(c){ c = parseInt(c, 10); if (c > 0) s[c] = true; });
+  return Object.keys(s).map(Number).sort(function(a, b){ return a - b; });
+}
+// Continuações em que ainda existe alguém cadastrado (pra ninguém "sumir")
+function contDosMembros(genero) {
+  return DB.todosMembros.filter(function(m){ return m.genero === genero; }).map(function(m){ return m.continuacao; });
+}
+// Mocidade = 3ª continuação em diante (moços e moças); crianças = 1ª e 2ª
+function _ehMocidade(m) { return parseInt(m.continuacao, 10) >= 3; }
 
 // DATA LAYER ════════
 const DB = {
@@ -3946,9 +4046,11 @@ function updateContinuacaoOptions() {
   const g = document.getElementById('novo-genero').value;
   const s = document.getElementById('novo-continuacao');
   if (!g) { s.innerHTML = '<option value="">Selecione o gênero primeiro</option>'; return; }
-  const max = g === 'M' ? 3 : 5, ord = ['','1ª','2ª','3ª','4ª','5ª'];
+  // continuações de hoje (+ a do membro que está sendo editado, se for uma antiga)
+  const editando = _editMembroId ? DB.todosMembros.find(x => String(x.id) === String(_editMembroId)) : null;
+  const lista = contListaEm(g, todayISO(), editando && editando.genero === g ? [editando.continuacao] : []);
   s.innerHTML = '<option value="">Selecione</option>' +
-    Array.from({length:max},(_,i)=>`<option value="${i+1}">${ord[i+1]} Continuação</option>`).join('');
+    lista.map(c=>`<option value="${c}">${_ORD[c]} Continuação</option>`).join('');
 }
 
 // ════════ PHOTO — GALLERY + CAMERA + FRAMING ════════
@@ -4433,13 +4535,13 @@ function onFiltroGrupoChange() {
     lbl.textContent = 'Subgrupo (Irmãos)';
     sel.innerHTML = `
       <option value="todos">Todos os Irmãos</option>
-      <option value="mocos">🧑 Moços (3ª Cont.)</option>
+      <option value="mocos">🧑 Moços (3ª Cont. em diante)</option>
       <option value="meninos">🧒 Meninos (1ª-2ª Cont.)</option>`;
   } else {
     lbl.textContent = 'Subgrupo (Irmãs)';
     sel.innerHTML = `
       <option value="todos">Todas as Irmãs</option>
-      <option value="mocas">👩 Moças (3ª-5ª Cont.)</option>
+      <option value="mocas">👩 Moças (3ª Cont. em diante)</option>
       <option value="meninas">👧 Meninas (1ª-2ª Cont.)</option>`;
   }
   onFiltroSubgrupoChange();
@@ -4455,9 +4557,8 @@ function onFiltroSubgrupoChange() {
   // Nível 3: continuação específica dentro de Moços / Moças
   if (sub === 'mocos') {
     contLbl.textContent = 'Continuação (Moços)';
-    contSel.innerHTML = `
-      <option value="todos">Todas as Continuações</option>
-      <option value="3">3ª Continuação</option>`;
+    contSel.innerHTML = `<option value="todos">Todas as Continuações</option>` +
+      contListaEm('M', todayISO(), contDosMembros('M')).filter(c => c >= 3).map(c => `<option value="${c}">${_ORD[c]} Continuação</option>`).join('');
     contWrap.style.display = 'block';
   } else if (sub === 'meninos') {
     contLbl.textContent = 'Continuação (Meninos)';
@@ -4468,11 +4569,8 @@ function onFiltroSubgrupoChange() {
     contWrap.style.display = 'block';
   } else if (sub === 'mocas') {
     contLbl.textContent = 'Continuação (Moças)';
-    contSel.innerHTML = `
-      <option value="todos">Todas as Continuações</option>
-      <option value="3">3ª Continuação</option>
-      <option value="4">4ª Continuação</option>
-      <option value="5">5ª Continuação</option>`;
+    contSel.innerHTML = `<option value="todos">Todas as Continuações</option>` +
+      contListaEm('F', todayISO(), contDosMembros('F')).filter(c => c >= 3).map(c => `<option value="${c}">${_ORD[c]} Continuação</option>`).join('');
     contWrap.style.display = 'block';
   } else if (sub === 'meninas') {
     contLbl.textContent = 'Continuação (Meninas)';
@@ -4499,12 +4597,12 @@ function getMemberIdsByFilter() {
   } else if (grupo === 'criancas') {
     filtered = all.filter(m=>m.continuacao===1||m.continuacao===2);
   } else if (grupo === 'mocidade') {
-    filtered = all.filter(m=>(m.genero==='F'&&m.continuacao>=3&&m.continuacao<=5)||(m.genero==='M'&&m.continuacao===3));
+    filtered = all.filter(m=>_ehMocidade(m));
   } else if (grupo === 'irmaos') {
     if (sub === 'todos') {
       filtered = all.filter(m=>m.genero==='M');
     } else if (sub === 'mocos') {
-      if (cont === 'todos') filtered = all.filter(m=>m.genero==='M'&&m.continuacao===3);
+      if (cont === 'todos') filtered = all.filter(m=>m.genero==='M'&&m.continuacao>=3);
       else { const n=parseInt(cont); filtered = all.filter(m=>m.genero==='M'&&m.continuacao===n); }
     } else if (sub === 'meninos') {
       if (cont === 'todos') filtered = all.filter(m=>m.genero==='M'&&(m.continuacao===1||m.continuacao===2));
@@ -4516,7 +4614,7 @@ function getMemberIdsByFilter() {
     if (sub === 'todos') {
       filtered = all.filter(m=>m.genero==='F');
     } else if (sub === 'mocas') {
-      if (cont === 'todos') filtered = all.filter(m=>m.genero==='F'&&m.continuacao>=3&&m.continuacao<=5);
+      if (cont === 'todos') filtered = all.filter(m=>m.genero==='F'&&m.continuacao>=3);
       else { const n=parseInt(cont); filtered = all.filter(m=>m.genero==='F'&&m.continuacao===n); }
     } else if (sub === 'meninas') {
       if (cont === 'todos') filtered = all.filter(m=>m.genero==='F'&&(m.continuacao===1||m.continuacao===2));
@@ -4852,13 +4950,36 @@ function fecharGrafico() {
 let currentMeetingId = null, presencaInterna = {}, presencaGeneroFiltro = 'todos', presencaContFiltro = 'todos';
 // visitantes desta reunião: [{ id: 'v_timestamp', comum: 'NomeDaComum' }]
 let presencaVisitantes = [];
+// Quem VOCÊ marcou/desmarcou nesta chamada (ainda não salvo). O resto segue o
+// servidor: se outra pessoa salvar a chamada da mesma reunião, aparece aqui na hora,
+// e ao salvar só as suas mudanças são aplicadas por cima (não apaga as dela).
+let _presencaMexidos = {};
+function _presencaAtualizarDoServidor() {
+  if (!currentMeetingId) return;
+  var tela = document.getElementById('historico-presenca');
+  if (!tela || tela.style.display === 'none') return;
+  var mt = DB.meetings.find(function(m){ return (m.id && String(m.id) === String(currentMeetingId)) || m.date === currentMeetingId; });
+  if (!mt) return;
+  var noServidor = {};
+  (mt.present || []).forEach(function(id){ noServidor[String(id)] = true; });
+  Object.keys(presencaInterna).forEach(function(k){
+    if (String(k).indexOf('v_') === 0 || _presencaMexidos[k]) return;
+    if (!noServidor[String(k)]) delete presencaInterna[k];
+  });
+  (mt.present || []).forEach(function(id){ if (!_presencaMexidos[id]) presencaInterna[id] = true; });
+  // visitantes são gravados na hora em que são lançados: seguem sempre o servidor
+  presencaVisitantes = ((DB.visitors || {})[String(currentMeetingId)] || []).map(function(v){ return Object.assign({}, v); });
+  Object.keys(presencaInterna).forEach(function(k){ if (String(k).indexOf('v_') === 0 && !presencaVisitantes.some(function(v){ return v.id === k; })) delete presencaInterna[k]; });
+  presencaVisitantes.forEach(function(v){ presencaInterna[v.id] = true; });
+  renderPresencaChamada();
+}
 
 async function abrirPresencaInterna(meetingId) {
   await _fbLoadMeetings();
   await _fbLoadVisitors();
   const mt = DB.meetings.find(m=>(m.id&&String(m.id)===String(meetingId))||m.date===meetingId);
   if (!mt) return;
-  currentMeetingId = meetingId; presencaInterna = {}; presencaGeneroFiltro = 'todos'; presencaContFiltro = 'todos';
+  currentMeetingId = meetingId; presencaInterna = {}; _presencaMexidos = {}; presencaGeneroFiltro = 'todos'; presencaContFiltro = 'todos';
   (mt.present||[]).forEach(id=>{ presencaInterna[id]=true; });
   // Carrega visitantes salvos para esta reunião
   const allVisitors = DB.visitors;
@@ -4898,22 +5019,26 @@ function setPresencaGenero(g) {
   const subF = document.getElementById('pres-sub-irmas');
   if (subM) subM.style.display = g === 'M' ? 'block' : 'none';
   if (subF) subF.style.display = g === 'F' ? 'block' : 'none';
-  // Reset visuais dos sub-botões
-  ['1','2','3'].forEach(c => { const el = document.getElementById('pres-sub-M-'+c); if(el) el.className='btn btn-secondary btn-sm'; el&&(el.style.flex='1')&&(el.style.fontSize='.75rem'); });
-  ['1','2','3','4','5'].forEach(c => { const el = document.getElementById('pres-sub-F-'+c); if(el) el.className='btn btn-secondary btn-sm'; });
-  const mTodos = document.getElementById('pres-sub-M-todos'); if(mTodos) mTodos.className='btn btn-primary btn-sm';
-  const fTodos = document.getElementById('pres-sub-F-todos'); if(fTodos) fTodos.className='btn btn-primary btn-sm';
+  // Sub-botões de continuação, conforme a quantidade de continuações na data desta reunião
+  _renderPresSubBotoes();
   renderPresencaChamada();
 }
 
+function _renderPresSubBotoes() {
+  const mt = DB.meetings.find(m => (m.id && String(m.id) === String(currentMeetingId)) || m.date === currentMeetingId);
+  const data = mt ? mt.date : todayISO();
+  ['M', 'F'].forEach(g => {
+    const box = document.getElementById('pres-sub-' + g + '-btns');
+    if (!box) return;
+    const conts = ['todos'].concat(contListaEm(g, data, contDosMembros(g)).map(String));
+    box.innerHTML = conts.map(c => `<button id="pres-sub-${g}-${c}" data-cont="${c}" class="btn ${c === 'todos' ? 'btn-primary' : 'btn-secondary'} btn-sm" style="flex:1;font-size:.75rem;" onclick="setPresencaCont('${g}','${c}')">${c === 'todos' ? 'Todas' : _ORD[c]}</button>`).join('');
+  });
+}
 function setPresencaCont(genero, cont) {
   presencaContFiltro = cont;
   // Atualiza visual dos sub-botões do gênero correto
-  const conts = genero === 'M' ? ['todos','1','2','3'] : ['todos','1','2','3','4','5'];
-  conts.forEach(c => {
-    const el = document.getElementById('pres-sub-' + genero + '-' + c);
-    if (!el) return;
-    el.className = c === cont ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+  document.querySelectorAll('#pres-sub-' + genero + '-btns button').forEach(el => {
+    el.className = el.dataset.cont === cont ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
     el.style.flex = '1'; el.style.fontSize = '.75rem';
   });
   renderPresencaChamada();
@@ -5248,6 +5373,7 @@ function togglePresencaInterna(id) {
   const key = isNaN(id) ? id : parseInt(id);
   const eraPresenteAgora = presencaInterna[key];
   presencaInterna[key] = !presencaInterna[key];
+  _presencaMexidos[key] = true;
   // Se marcou como PRESENTE, verifica se tinha auto-visita e remove
   if (!eraPresenteAgora && !isNaN(id)) {
     _removerAutoVisitaMembro(id);
@@ -5257,21 +5383,33 @@ function togglePresencaInterna(id) {
 
 async function salvarPresencaInterna() {
   if (!currentMeetingId) return;
-  const present = Object.entries(presencaInterna)
-    .filter(([k,v])=>v && !String(k).startsWith('v_'))
-    .map(([k])=>parseInt(k));
+  // Pega a chamada mais nova do servidor e aplica só o que VOCÊ mudou por cima
+  await _fbLoadMeetings();
   const meetings = DB.meetings;
   const idx = meetings.findIndex(m=>(m.id&&String(m.id)===String(currentMeetingId))||m.date===currentMeetingId);
   if (idx===-1) return;
+  const final = {};
+  (meetings[idx].present || []).forEach(id => { final[String(id)] = id; });
+  Object.keys(_presencaMexidos).forEach(k => {
+    if (String(k).startsWith('v_')) return;
+    if (presencaInterna[k]) final[String(k)] = isNaN(k) ? k : parseInt(k);
+    else delete final[String(k)];
+  });
+  const present = Object.values(final);
   meetings[idx].present = present;
   await _fbSaveMeetings(meetings);
+  _presencaMexidos = {};
+  presencaInterna = {};
+  present.forEach(id => { presencaInterna[id] = true; });
+  presencaVisitantes.forEach(v => { presencaInterna[v.id] = true; });
+  renderPresencaChamada();
   const allVisitors = DB.visitors;
   allVisitors[String(currentMeetingId)] = presencaVisitantes;
   await _fbSaveVisitors(allVisitors);
   renderStats(); showToast('✅ Presença salva!'); registrarAtividade('registrou presença em uma reunião');
 }
 
-function limparPresencaInterna() { presencaInterna={}; renderPresencaChamada(); }
+function limparPresencaInterna() { Object.keys(presencaInterna).forEach(function(k){ _presencaMexidos[k] = true; }); presencaInterna={}; renderPresencaChamada(); }
 function renderFreqInterna() {
   const q = (document.getElementById('presenca-freq-search')?.value||'').toLowerCase();
   const members = DB.members.filter(m=>m.nome.toLowerCase().includes(q));
@@ -5625,13 +5763,25 @@ function _openSubmenuWithMembers(type, members) {
     renderGroupList(members.filter(m=>m.continuacao===1||m.continuacao===2),'criancas-list-result');
   } else if (type==='mocidade'){
     document.getElementById('sub-mocidade').classList.add('active');
-    renderGroupList(members.filter(m=>(m.genero==='F'&&m.continuacao>=3&&m.continuacao<=5)||(m.genero==='M'&&m.continuacao===3)),'mocidade-list-result');
+    renderGroupList(members.filter(m=>_ehMocidade(m)),'mocidade-list-result');
   } else if (type==='todos'){
     document.getElementById('sub-todos').classList.add('active');
     renderGroupList(members,'todos-list-result');
   } else {
     document.getElementById('sub-'+type).classList.add('active');
+    if (type === 'irmaos' || type === 'irmas') _renderOpcoesConts(type);
   }
+}
+// Botões "1ª, 2ª... Continuação" de Irmãos/Irmãs, conforme a quantidade de hoje
+function _renderOpcoesConts(type) {
+  var g = type === 'irmaos' ? 'M' : 'F', el = document.getElementById('sub-' + type + '-opcoes');
+  if (!el) return;
+  el.innerHTML = contListaEm(g, todayISO(), contDosMembros(g)).map(function(c){
+    return '<div class="submenu-opt" onclick="showContGroup(\'' + type + '\',\'' + c + '\')">' + _ORD[c] + ' Continuação</div>';
+  }).join('') +
+  (g === 'M'
+    ? '<div class="submenu-opt" onclick="showContGroup(\'irmaos\',\'mocos\')">🧑 Moços</div><div class="submenu-opt" onclick="showContGroup(\'irmaos\',\'meninos\')">🧒 Meninos</div>'
+    : '<div class="submenu-opt" onclick="showContGroup(\'irmas\',\'mocas\')">👩 Moças</div><div class="submenu-opt" onclick="showContGroup(\'irmas\',\'meninas\')">👧 Meninas</div>');
 }
 
 function closeSubmenu() {
@@ -5658,12 +5808,12 @@ function showContGroup(gender,key) {
 function _showContGroupWith(gender, key, members) {
   let filtered=[];
   if (gender==='irmaos') {
-    if (key==='mocos') filtered=members.filter(m=>m.genero==='M'&&m.continuacao===3);
+    if (key==='mocos') filtered=members.filter(m=>m.genero==='M'&&m.continuacao>=3);
     else if (key==='meninos') filtered=members.filter(m=>m.genero==='M'&&(m.continuacao===1||m.continuacao===2));
     else { const n=parseInt(key); filtered=members.filter(m=>m.genero==='M'&&m.continuacao===n); }
     renderGroupList(filtered,'irmaos-list-result');
   } else {
-    if (key==='mocas') filtered=members.filter(m=>m.genero==='F'&&m.continuacao>=3&&m.continuacao<=5);
+    if (key==='mocas') filtered=members.filter(m=>m.genero==='F'&&m.continuacao>=3);
     else if (key==='meninas') filtered=members.filter(m=>m.genero==='F'&&(m.continuacao===1||m.continuacao===2));
     else { const n=parseInt(key); filtered=members.filter(m=>m.genero==='F'&&m.continuacao===n); }
     renderGroupList(filtered,'irmas-list-result');
@@ -5671,7 +5821,7 @@ function _showContGroupWith(gender, key, members) {
 }
 
 function getCriancas() { return DB.members.filter(m=>m.continuacao===1||m.continuacao===2); }
-function getMocidade() { return DB.members.filter(m=>(m.genero==='F'&&m.continuacao>=3&&m.continuacao<=5)||(m.genero==='M'&&m.continuacao===3)); }
+function getMocidade() { return DB.members.filter(m=>_ehMocidade(m)); }
 
 function renderGroupList(members,containerId) {
   const el = document.getElementById(containerId);
@@ -6543,7 +6693,7 @@ function memberCardHTML(m) {
 // que ele volta pra tela (e a cada 10 min), confere se saiu versão nova; se saiu,
 // recarrega sozinho — mas só quando não tem nenhuma tela/formulário aberto, pra
 // não perder nada que esteja sendo preenchido. MUDE ESTE NÚMERO A CADA PUBLICAÇÃO.
-const APP_VERSAO = '2026-11-07.2';
+const APP_VERSAO = '2026-11-07.3';
 let _versaoNovaPendente = false;
 async function _verificarVersaoNova() {
   if (!navigator.onLine || location.protocol === 'file:') return;
@@ -6820,7 +6970,7 @@ function avatarHTML(m, size) {
   return `<div class="member-avatar" style="background:${color};${s?`width:${s};height:${s};font-size:.7rem;`:''}">${initials}</div>`;
 }
 function genderLabel(m){ return m.genero==='M'?'👨 Masculino':'👩 Feminino'; }
-function contLabel(m){ const o=['','1ª','2ª','3ª','4ª','5ª']; return `${o[m.continuacao]||m.continuacao} Cont.`; }
+function contLabel(m){ const o=_ORD; return `${o[m.continuacao]||m.continuacao} Cont.`; }
 function formatDate(d){ if(!d)return''; const [y,mo,da]=d.split('-'); return `${da}/${mo}/${y}`; }
 function todayISO(){
   const n = new Date();
@@ -8073,13 +8223,15 @@ async function vsAbrirGenero(genero) {
   document.getElementById('vs-genero-titulo').textContent = label;
 
   // Montar botões de continuação
-  var maxCont = genero === 'M' ? 3 : 5;
-  var ord = ['','1ª','2ª','3ª','4ª','5ª'];
+  // continuações de hoje + as que já têm recitativo ou membro (as antigas não somem)
+  var comDados = DB.versinhos.filter(function(v){ return v.genero === genero; }).map(function(v){ return v.cont; }).concat(contDosMembros(genero));
+  var listaConts = contListaEm(genero, todayISO(), comDados);
+  var ord = _ORD;
   var container = document.getElementById('vs-cont-btns-container');
-  // 3 colunas para irmãos, ajustar grid
-  container.style.gridTemplateColumns = maxCont <= 3 ? 'repeat(3,1fr)' : 'repeat(3,1fr)';
+  container.style.gridTemplateColumns = 'repeat(3,1fr)';
   container.innerHTML = '';
-  for (var c = 1; c <= maxCont; c++) {
+  for (var ci = 0; ci < listaConts.length; ci++) {
+    var c = listaConts[ci];
     (function(num){
       var btn = document.createElement('div');
       btn.className = 'vs-cont-btn';
@@ -8101,7 +8253,7 @@ async function vsAbrirCont(cont) {
   document.getElementById('vs-nivel-conts').style.display = 'none';
   document.getElementById('vs-nivel-recit').style.display = 'block';
 
-  var ord = ['','1ª','2ª','3ª','4ª','5ª'];
+  var ord = _ORD;
   var genLabel = _vsGeneroAtual === 'M' ? '👨 Irmãos' : '👩 Irmãs';
   document.getElementById('vs-recit-titulo').textContent = '📖 ' + genLabel + ' — ' + ord[parseInt(cont)] + ' Continuação';
 
@@ -11076,9 +11228,22 @@ const _bibliaCache = {};
 async function _bibliaCapitulo(livroIdx, cap) {
   var chave = livroIdx + ':' + cap;
   if (_bibliaCache[chave]) return _bibliaCache[chave];
-  var resp = await fetch('https://bolls.life/get-text/ARC09/' + (livroIdx + 1) + '/' + cap + '/');
-  if (!resp.ok) throw new Error('Bíblia indisponível (' + resp.status + ')');
-  var lista = await resp.json();
+  // Capítulo já buscado antes fica guardado no aparelho (o site às vezes demora)
+  try { var guardado = JSON.parse(localStorage.getItem('rj_biblia_' + chave) || 'null'); if (guardado && guardado.length) return (_bibliaCache[chave] = guardado); } catch(e) {}
+  // O site às vezes fica lento ou falha: até 3 tentativas, cada uma com limite de tempo
+  var lista = null, ultimoErro = null;
+  for (var tent = 0; tent < 3 && !lista; tent++) {
+    if (tent) await new Promise(function(r){ setTimeout(r, 1000 * tent); });
+    try {
+      var ctl = window.AbortController ? new AbortController() : null;
+      var limite = ctl ? setTimeout(function(){ ctl.abort(); }, 15000) : null;
+      var resp = await fetch('https://bolls.life/get-text/ARC09/' + (livroIdx + 1) + '/' + cap + '/', ctl ? { signal: ctl.signal } : {});
+      clearTimeout(limite);
+      if (!resp.ok) throw new Error('Bíblia indisponível (' + resp.status + ')');
+      lista = await resp.json();
+    } catch(e) { ultimoErro = e; }
+  }
+  if (!lista) throw ultimoErro || new Error('Bíblia indisponível');
   if (!Array.isArray(lista) || !lista.length) throw new Error('capítulo não encontrado');
   var versos = lista.map(function(v) {
     var tx = String(v.text || '')
@@ -11088,6 +11253,7 @@ async function _bibliaCapitulo(livroIdx, cap) {
     return { verse: v.verse, text: tx };
   });
   _bibliaCache[chave] = versos;
+  try { localStorage.setItem('rj_biblia_' + chave, JSON.stringify(versos)); } catch(e) {}
   return versos;
 }
 function _livroIdxPorNome(nome) {
@@ -11842,8 +12008,8 @@ async function gerarRelatorioPDF() {
 
       // ── Gráficos de pizza por grupo ──────────────────────────────────────
       const gruposPresenca = [
-        { label: 'Irmaos',  genero: 'M', conts: [1,2,3] },
-        { label: 'Irmas',   genero: 'F', conts: [3,4,5] },
+        { label: 'Irmaos',  genero: 'M', conts: contListaEm('M', mt.date) },
+        { label: 'Irmas',   genero: 'F', conts: contListaEm('F', mt.date).filter(c => c >= 3) },
       ];
 
       const pizzaGroups = [];
@@ -11964,7 +12130,7 @@ async function gerarRelatorioPDF() {
         for (const m of presentMembers) {
           checkPage(rowH + 2);
           const cx = margin + col * (colW + 6);
-          const contO = ['','1ª','2ª','3ª','4ª','5ª'];
+          const contO = _ORD;
           const contStr = contO[m.continuacao] || '';
           const genStr = m.genero === 'M' ? 'Irmao' : 'Irma';
           const grupoStr = genStr + ' - ' + contStr + ' Cont.';
@@ -12052,7 +12218,7 @@ async function gerarRelatorioPDF() {
         porData[v.data].push(v);
       });
 
-      const contLabel = c => { const o=['','1ª','2ª','3ª','4ª','5ª']; return (o[parseInt(c)] || c) + ' Cont.'; };
+      const contLabel = c => { const o=_ORD; return (o[parseInt(c)] || c) + ' Cont.'; };
       const arcLivros = typeof ARC_LIVROS !== 'undefined' ? ARC_LIVROS : [];
 
       Object.keys(porData).sort().forEach(data => {
@@ -12222,7 +12388,7 @@ async function gerarRelatorioPDF() {
         doc.text(m.nome, textX, rowY + 4);
 
         // Continuação
-        const contO = ['','1ª','2ª','3ª','4ª','5ª'];
+        const contO = _ORD;
         const contStr = (contO[m.continuacao] || '') + ' Cont.';
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7);
@@ -12737,9 +12903,9 @@ function _doRenderBirthdayNotifications(wrap) {
 // estar pronto quando o usuário clicar. renderMembrosGlobal() é a busca da aba
 // (só faz algo se o campo de pesquisa tiver texto), então não serve pra isso.
 function _prefillMembrosLists() {
-  const members = DB.members;
+  const members = DB.todosMembros; // cadastro: inclusive inativos
   try { renderGroupList(members.filter(m=>m.continuacao===1||m.continuacao===2), 'criancas-list-result'); } catch(e) {}
-  try { renderGroupList(members.filter(m=>(m.genero==='F'&&m.continuacao>=3&&m.continuacao<=5)||(m.genero==='M'&&m.continuacao===3)), 'mocidade-list-result'); } catch(e) {}
+  try { renderGroupList(members.filter(m=>_ehMocidade(m)), 'mocidade-list-result'); } catch(e) {}
   try { renderGroupList(members, 'todos-list-result'); } catch(e) {}
   // Irmãos/Irmãs dependem do subgrupo (moços/meninos/N) que o usuário selecionou
   // por último — repopula com o mesmo filtro se houver um selecionado.
@@ -12779,7 +12945,7 @@ window._atualizarTudoApp = async function() {
       visitors: 'rj_visitors', visitas: 'rj_visitas', visitas_comuns: 'rj_visitas_comuns',
       atas: 'rj_atas', versinhos: 'rj_versinhos', lancamentos: 'rj_lancamentos',
       atividades: 'rj_atividades', visitas_locais_done: 'rj_visitas_locais_done',
-      visitas_amarcar_ciclo: 'rj_amarcar_ciclo'
+      visitas_amarcar_ciclo: 'rj_amarcar_ciclo', continuacoes: 'rj_continuacoes'
     };
     const buscarComRetry = async function(fbKey, lsKey) {
       const atrasos = [0, 1500, 3500, 7000]; // até 4 tentativas
@@ -12826,6 +12992,13 @@ window._redesenharTudo = async function() {
   await tentar(renderAtasList);
   await tentar(renderLancamentos);
   await tentar(renderBirthdayNotifications);
+  // Telas abertas mais "fundo": detalhe de recitativos de uma reunião, chamada e mapa das comuns
+  await tentar(function(){
+    var det = document.getElementById('vs-nivel-detalhe');
+    if (det && det.style.display !== 'none' && typeof _vsDetalheMeetingDate !== 'undefined' && _vsDetalheMeetingDate) _vsRenderDetalheNow(_vsDetalheMeetingDate);
+  });
+  await tentar(function(){ if (typeof _presencaAtualizarDoServidor === 'function') _presencaAtualizarDoServidor(); });
+  await tentar(function(){ if (typeof cmRedesenhar === 'function') cmRedesenhar(); });
   // Versinhos: menu de nível/continuação/reunião é navegado em camadas — o
   // conteúdo profundo (recitativos de uma reunião específica) só existe depois
   // que o usuário entra nele, mas garantimos os dados frescos no localStorage
@@ -15055,7 +15228,52 @@ document.addEventListener('click', function(e) {
 
 <!-- Botão da Glorinha (assistente de IA) -->
 <button id="btn-glorinha" onclick="abrirGlorinha()" title="Falar com a Glorinha" style="position:fixed;left:16px;bottom:20px;z-index:150;width:58px;height:58px;border-radius:50%;border:3px solid #fff;padding:0;background:#fff;cursor:pointer;box-shadow:0 4px 16px rgba(79,70,229,.35);overflow:hidden;"></button>
-<script>document.getElementById('btn-glorinha').innerHTML = GLORINHA_AVATAR;</script>
+<script>document.getElementById('btn-glorinha').innerHTML = GLORINHA_AVATAR;
+// Segurar e arrastar o ícone da Glorinha. A posição nova vale só enquanto o app
+// está aberto (fica só na memória): ao fechar e abrir, volta ao canto padrão.
+(function() {
+  var b = document.getElementById('btn-glorinha');
+  if (!b) return;
+  b.removeAttribute('onclick');
+  b.style.touchAction = 'none';
+  b.style.webkitUserSelect = b.style.userSelect = 'none';
+  var espera = null, arrastando = false, x0 = 0, y0 = 0, dx = 0, dy = 0, ignorarClique = false;
+  b.addEventListener('pointerdown', function(e) {
+    x0 = e.clientX; y0 = e.clientY;
+    var r = b.getBoundingClientRect(); dx = x0 - r.left; dy = y0 - r.top;
+    arrastando = false;
+    try { b.setPointerCapture(e.pointerId); } catch(x) {}
+    clearTimeout(espera);
+    espera = setTimeout(function() { // segurou: agora pode arrastar
+      arrastando = true;
+      b.style.transition = 'transform .15s'; b.style.transform = 'scale(1.15)';
+      if (navigator.vibrate) navigator.vibrate(25);
+    }, 280);
+  });
+  b.addEventListener('pointermove', function(e) {
+    if (!arrastando) { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 10) clearTimeout(espera); return; }
+    var w = b.offsetWidth, h = b.offsetHeight;
+    b.style.left = Math.min(innerWidth - w - 4, Math.max(4, e.clientX - dx)) + 'px';
+    b.style.top = Math.min(innerHeight - h - 4, Math.max(4, e.clientY - dy)) + 'px';
+    b.style.bottom = 'auto'; b.style.right = 'auto';
+  });
+  var soltar = function() {
+    clearTimeout(espera);
+    if (arrastando) { b.style.transform = ''; ignorarClique = true; setTimeout(function(){ ignorarClique = false; }, 60); }
+    arrastando = false;
+  };
+  b.addEventListener('pointerup', soltar);
+  b.addEventListener('pointercancel', soltar);
+  b.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+  b.addEventListener('click', function() { if (!ignorarClique) abrirGlorinha(); });
+  // Girou a tela / mudou o tamanho: mantém o ícone dentro da tela
+  window.addEventListener('resize', function() {
+    if (!b.style.top || b.style.top === 'auto') return;
+    b.style.left = Math.min(innerWidth - b.offsetWidth - 4, parseFloat(b.style.left) || 16) + 'px';
+    b.style.top = Math.min(innerHeight - b.offsetHeight - 4, parseFloat(b.style.top) || 0) + 'px';
+  });
+})();
+</script>
 </div><!-- /app-root -->
 <script>
 

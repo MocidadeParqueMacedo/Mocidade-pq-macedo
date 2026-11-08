@@ -1410,7 +1410,7 @@
 <div id="top-fixo">
 <div class="header" style="position:relative;">
   <h1>🏛️ Reunião de Jovens</h1>
-  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-07.3</div>
+  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-08.1</div>
 
 </div>
 
@@ -2037,6 +2037,8 @@
       </div>
       <div class="form-group"><label>Data de Nascimento</label><input type="date" id="novo-nascimento"/></div>
     </div>
+    <div class="form-group"><label>📅 Participa da reunião desde</label><input type="date" id="novo-desde"/>
+      <div style="font-size:.7rem;color:var(--text-muted);margin-top:3px;">Já vem com a data de hoje — troque se ele começou antes. Reuniões antes dessa data não contam como falta.</div></div>
     <div class="form-group"><label>Telefone</label>
       <div style="display:flex;gap:6px;">
         <input type="tel" id="novo-tel" placeholder="(00) 00000-0000" autocomplete="tel" style="flex:1;min-width:0;"/>
@@ -2044,8 +2046,6 @@
       </div>
     </div>
     <div class="form-group"><label>🏠 Endereço</label><input type="text" id="novo-endereco" placeholder="Rua, número, bairro..."/></div>
-    <div class="form-group"><label>📅 Membro desde</label><input type="date" id="novo-desde"/>
-      <div style="font-size:.7rem;color:var(--text-muted);margin-top:3px;">Reuniões antes dessa data não contam como falta pra ele.</div></div>
     <div class="form-group" style="display:flex;align-items:center;gap:10px;">
       <input type="checkbox" id="novo-auxiliar" style="width:auto"/>
       <label for="novo-auxiliar" style="margin:0">⭐ Marcar como Auxiliar/Líder</label>
@@ -2487,6 +2487,8 @@
       <!-- Adicionar linha na ordem (membro opcional) -->
       <div id="recit-add-membro-wrap">
         <button class="btn btn-secondary btn-sm btn-full" style="margin-top:4px;" onclick="recitAdicionarLinha()">＋ Adicionar linha na ordem</button>
+        <button class="btn btn-secondary btn-sm btn-full" style="margin-top:6px;" onclick="recitCompletarSequencia()">🔢 Completar sequência</button>
+        <div style="font-size:.7rem;color:var(--text-muted);margin-top:3px;">Coloque o verso do primeiro e do último; os do meio são preenchidos em ordem.</div>
       </div>
 
       <!-- Versos para o membro recém-adicionado (aparece após seleção) -->
@@ -6693,7 +6695,7 @@ function memberCardHTML(m) {
 // que ele volta pra tela (e a cada 10 min), confere se saiu versão nova; se saiu,
 // recarrega sozinho — mas só quando não tem nenhuma tela/formulário aberto, pra
 // não perder nada que esteja sendo preenchido. MUDE ESTE NÚMERO A CADA PUBLICAÇÃO.
-const APP_VERSAO = '2026-11-07.3';
+const APP_VERSAO = '2026-11-08.1';
 let _versaoNovaPendente = false;
 async function _verificarVersaoNova() {
   if (!navigator.onLine || location.protocol === 'file:') return;
@@ -11414,6 +11416,67 @@ function recitConfirmarVersiculos() {
   document.getElementById('recit-trecho-wrap').style.display = 'none';
   recitRenderOrdem();
   showToast('✅ Versículos atribuídos!');
+}
+
+// Monta a referência legível (ex.: "Salmos 1:1-3") a partir de chaves "cap:ver"
+function _recitMontarRef(chaves) {
+  var livro = ARC_LIVROS[_recitLivroIdx];
+  var porCap = {};
+  chaves.forEach(function(cv){ var p = cv.split(':'); (porCap[p[0]] = porCap[p[0]] || []).push(parseInt(p[1], 10)); });
+  return Object.keys(porCap).sort(function(a,b){return a-b;}).map(function(cap){
+    var arr = porCap[cap].sort(function(a,b){return a-b;});
+    var grupos = [], g = [arr[0]];
+    for (var i = 1; i < arr.length; i++) { if (arr[i] === arr[i-1] + 1) g.push(arr[i]); else { grupos.push(g); g = [arr[i]]; } }
+    grupos.push(g);
+    return livro.nome + ' ' + cap + ':' + grupos.map(function(gr){ return gr.length === 1 ? gr[0] : gr[0] + '-' + gr[gr.length-1]; }).join(',');
+  }).join('; ');
+}
+
+// Completar sequência: entre duas linhas que já têm verso, as linhas sem verso
+// recebem os versos do meio, em ordem (1 para cada; se sobrar certinho, divide igual).
+function recitCompletarSequencia() {
+  if (_recitLivroIdx < 0) { showToast('Selecione o livro primeiro!'); return; }
+  var livro = ARC_LIVROS[_recitLivroIdx];
+  var pos = function(k){ var p = k.split(':'); return [parseInt(p[0], 10), parseInt(p[1], 10)]; };
+  var ordenar = function(a, b){ var x = pos(a), y = pos(b); return x[0] - y[0] || x[1] - y[1]; };
+  var ancoras = [];
+  _recitOrdem.forEach(function(o, i){ if (o.versiculos && o.versiculos.length) ancoras.push(i); });
+  if (ancoras.length < 2) { showToast('Coloque o verso da primeira e da última pessoa antes.'); return; }
+  var preenchidas = 0, problemas = [];
+  for (var a = 0; a + 1 < ancoras.length; a++) {
+    var ini = ancoras[a], fim = ancoras[a+1];
+    var vazias = []; for (var i = ini + 1; i < fim; i++) vazias.push(i);
+    if (!vazias.length) continue;
+    var ultimoIni = _recitOrdem[ini].versiculos.slice().sort(ordenar).pop();
+    var primeiroFim = _recitOrdem[fim].versiculos.slice().sort(ordenar)[0];
+    // todos os versos entre o fim de uma linha e o começo da outra (pode passar de capítulo)
+    var meio = [], c = pos(ultimoIni)[0], v = pos(ultimoIni)[1], alvo = pos(primeiroFim);
+    while (true) {
+      v++;
+      if (v > (livro.vers[c-1] || 30)) { c++; v = 1; }
+      if (c > livro.caps || c > alvo[0] || (c === alvo[0] && v >= alvo[1])) break;
+      meio.push(c + ':' + v);
+    }
+    if (!meio.length || meio.length % vazias.length !== 0) {
+      problemas.push('linhas ' + (ini+2) + ' a ' + fim + ': ' + vazias.length + ' pessoa(s) para ' + meio.length + ' verso(s)');
+      continue;
+    }
+    var porLinha = meio.length / vazias.length;
+    vazias.forEach(function(li, n){
+      var vs = meio.slice(n * porLinha, (n + 1) * porLinha);
+      _recitOrdem[li].versiculos = vs;
+      _recitOrdem[li].ref = _recitMontarRef(vs);
+      _recitOrdem[li].trecho = null;
+      vs.forEach(function(k){ var cap = pos(k)[0]; if (_recitCapsSelected.indexOf(cap) < 0) _recitCapsSelected.push(cap); });
+      preenchidas++;
+    });
+  }
+  _recitCapsSelected.sort(function(a,b){return a-b;});
+  Array.from(document.getElementById('recit-cap-grid').children).forEach(function(b){ b.classList.toggle('sel', _recitCapsSelected.indexOf(parseInt(b.textContent, 10)) >= 0); });
+  recitRenderOrdem();
+  if (problemas.length) showToast('⚠️ Não bateu a quantidade — ' + problemas.join('; '));
+  else if (preenchidas) showToast('✅ Sequência completada (' + preenchidas + ' linha' + (preenchidas > 1 ? 's' : '') + ')');
+  else showToast('Não há linhas sem verso entre a primeira e a última.');
 }
 
 function recitRemoverMembro(idx) {

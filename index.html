@@ -876,6 +876,10 @@
   body.tema-escuro input[type="time"]::-webkit-datetime-edit {
     color: var(--text);
   }
+  /* Horário abre a roda do app: campo ocupa só o espaço dele, sem o relógio nativo */
+  input[type="time"] { min-width: 0; width: 100%; max-width: 100%; box-sizing: border-box; -webkit-appearance: none; appearance: none; }
+  input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+  .form-row > .form-group { min-width: 0; }
 
   #top-fixo { position: sticky; top: 0; z-index: 100; background: var(--card); }
 
@@ -1410,7 +1414,7 @@
 <div id="top-fixo">
 <div class="header" style="position:relative;">
   <h1>🏛️ Reunião de Jovens</h1>
-  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-08.1</div>
+  <div id="app-versao-rotulo" style="font-size:.6rem;opacity:.55;margin-top:2px;letter-spacing:.5px;">versão 2026-11-08.2</div>
 
 </div>
 
@@ -2265,30 +2269,29 @@
     <!-- Assunto -->
     <div class="form-group">
       <label>📝 Assunto *</label>
-      <div class="assunto-tabs">
-        <button class="assunto-tab active" onclick="setAssuntoTab('texto', this)">✏️ Texto</button>
-        <button class="assunto-tab" onclick="setAssuntoTab('doc', this)">📎 Documento</button>
-        <button class="assunto-tab" onclick="setAssuntoTab('foto', this)">📷 Foto</button>
-      </div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin:-2px 0 8px;">Use o que quiser: só texto, só documento, só foto — ou dois, ou os três juntos.</div>
 
       <!-- Texto -->
-      <div id="assunto-texto-panel">
+      <div style="font-size:.8rem;font-weight:800;color:var(--primary);margin-bottom:4px;">✏️ Texto</div>
+      <div id="assunto-texto-panel" style="margin-bottom:12px;">
         <textarea id="ata-assunto-texto" rows="4" placeholder="Descreva o assunto da reunião..." style="resize:none;"></textarea>
       </div>
 
       <!-- Documento -->
-      <div id="assunto-doc-panel" style="display:none;">
-        <div style="background:var(--bg);border:1.5px dashed var(--primary-light);border-radius:9px;padding:16px;text-align:center;">
-          <div style="font-size:1.5rem;margin-bottom:6px;">📎</div>
-          <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:10px;">Selecione um arquivo (PDF, DOC, etc.)</div>
+      <div style="font-size:.8rem;font-weight:800;color:var(--primary);margin-bottom:4px;">📎 Documento</div>
+      <div id="assunto-doc-panel" style="margin-bottom:12px;">
+        <div style="background:var(--bg);border:1.5px dashed var(--primary-light);border-radius:9px;padding:12px;text-align:center;">
+          <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:8px;">Selecione um arquivo (PDF, DOC, etc.)</div>
           <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ata-doc-input').click()">Escolher Arquivo</button>
           <input type="file" id="ata-doc-input" accept=".pdf,.doc,.docx,.txt,.odt" style="display:none" onchange="onAtaDocSelected(event)"/>
           <div id="ata-doc-nome" style="margin-top:8px;font-size:.8rem;color:var(--primary);font-weight:700;"></div>
+          <button id="ata-doc-remover" class="btn btn-secondary btn-sm" style="display:none;margin-top:6px;" onclick="limparDocAta()">🗑 Remover documento</button>
         </div>
       </div>
 
       <!-- Foto -->
-      <div id="assunto-foto-panel" style="display:none;">
+      <div style="font-size:.8rem;font-weight:800;color:var(--primary);margin-bottom:4px;">📷 Foto</div>
+      <div id="assunto-foto-panel">
         <div style="display:flex;gap:8px;margin-bottom:10px;">
           <button class="btn btn-secondary btn-sm" style="flex:1;" onclick="document.getElementById('ata-foto-galeria').click()">🖼 Galeria</button>
           <button class="btn btn-secondary btn-sm" style="flex:1;" onclick="document.getElementById('ata-foto-camera').click()">📷 Câmera</button>
@@ -6695,7 +6698,7 @@ function memberCardHTML(m) {
 // que ele volta pra tela (e a cada 10 min), confere se saiu versão nova; se saiu,
 // recarrega sozinho — mas só quando não tem nenhuma tela/formulário aberto, pra
 // não perder nada que esteja sendo preenchido. MUDE ESTE NÚMERO A CADA PUBLICAÇÃO.
-const APP_VERSAO = '2026-11-08.1';
+const APP_VERSAO = '2026-11-08.2';
 let _versaoNovaPendente = false;
 async function _verificarVersaoNova() {
   if (!navigator.onLine || location.protocol === 'file:') return;
@@ -6883,10 +6886,73 @@ function _rodaLigar(el) {
   el.addEventListener('click', abrir);
   el.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' ') abrir(e); });
 }
+// ── Mesma roda para HORÁRIO: duas colunas (hora · minuto) ──
+let _rodaH = null;
+function _rodaHoraMontar() {
+  if (_rodaH) return _rodaH;
+  _rodaMontar(); // garante o estilo
+  var fundo = document.createElement('div');
+  fundo.className = 'roda-fundo';
+  fundo.innerHTML = '<div class="roda-caixa" role="dialog" aria-label="Selecione o horário">' +
+    '<div class="roda-topo"><button class="roda-mini" type="button">Limpar</button><div class="roda-titulo">Selecione o horário</div>' +
+    '<button class="roda-hoje" type="button" title="Agora"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M12 7v5l3.5 2"/></svg></button></div>' +
+    '<div class="roda-colunas"><div class="roda-faixa"></div><div class="roda-col"></div><div style="width:18px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.2rem;position:relative;">:</div><div class="roda-col"></div></div>' +
+    '<div class="roda-botoes"><button class="roda-cancelar" type="button">Cancelar</button><button class="roda-confirmar" type="button">Confirmar</button></div></div>';
+  document.body.appendChild(fundo);
+  var cols = fundo.querySelectorAll('.roda-col');
+  _rodaH = { fundo: fundo, hora: cols[0], min: cols[1], input: null };
+  [cols[0], cols[1]].forEach(function(col) {
+    col.addEventListener('scroll', function(){ _rodaMarcar(col, _rodaIdx(col)); }, { passive: true });
+    col.addEventListener('click', function(e) {
+      var it = e.target.closest('.roda-item');
+      if (it) col.scrollTo({ top: +it.dataset.i * RODA_H, behavior: 'smooth' });
+    });
+  });
+  var fechar = function(){ fundo.classList.remove('open'); };
+  var definir = function(valor) {
+    var el = _rodaH.input; fechar(); if (!el) return;
+    el.value = valor;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  fundo.addEventListener('click', function(e){ if (e.target === fundo) fechar(); });
+  fundo.querySelector('.roda-cancelar').onclick = fechar;
+  fundo.querySelector('.roda-confirmar').onclick = function() {
+    definir(String(_rodaIdx(_rodaH.hora)).padStart(2, '0') + ':' + String(_rodaIdx(_rodaH.min)).padStart(2, '0'));
+  };
+  fundo.querySelector('.roda-mini').onclick = function(){ definir(''); };
+  fundo.querySelector('.roda-hoje').onclick = function() {
+    var h = new Date(); _rodaIr(_rodaH.hora, h.getHours(), true); _rodaIr(_rodaH.min, h.getMinutes(), true);
+  };
+  return _rodaH;
+}
+function abrirRodaHora(input) {
+  var r = _rodaHoraMontar();
+  r.input = input;
+  var v = /^\d{2}:\d{2}/.test(input.value) ? input.value : '19:00';
+  var horas = [], mins = [];
+  for (var i = 0; i < 24; i++) horas.push(String(i).padStart(2, '0'));
+  for (var j = 0; j < 60; j++) mins.push(String(j).padStart(2, '0'));
+  r.fundo.classList.add('open');
+  _rodaPreencher(r.hora, horas, +v.slice(0, 2));
+  _rodaPreencher(r.min, mins, +v.slice(3, 5));
+  r.fundo.querySelector('.roda-mini').style.visibility = input.value && !input.required ? 'visible' : 'hidden';
+}
+function _rodaHoraLigar(el) {
+  if (el._roda || el.type !== 'time') return;
+  el._roda = true;
+  el.readOnly = true; // sem o relógio do aparelho
+  el.style.cursor = 'pointer';
+  var abrir = function(e) { if (el.disabled) return; e.preventDefault(); el.blur(); abrirRodaHora(el); };
+  el.addEventListener('click', abrir);
+  el.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' ') abrir(e); });
+}
 (function() {
   var ligarTudo = function(raiz) {
     if (raiz.matches && raiz.matches('input[type="date"]')) _rodaLigar(raiz);
     if (raiz.querySelectorAll) raiz.querySelectorAll('input[type="date"]').forEach(_rodaLigar);
+    if (raiz.matches && raiz.matches('input[type="time"]')) _rodaHoraLigar(raiz);
+    if (raiz.querySelectorAll) raiz.querySelectorAll('input[type="time"]').forEach(_rodaHoraLigar);
   };
   var iniciar = function() {
     ligarTudo(document);
@@ -7825,18 +7891,10 @@ let _ataCameraStream = null;
 
 function abrirModalNovaAta() {
   _ataEditandoId = null;
-  _ataAssuntoTab = 'texto'; _ataDocData = null; _ataDocNome = null; _ataFotoData = null;
   document.getElementById('modal-ata-titulo').textContent = '📋 Nova Ata';
   document.getElementById('ata-data').value = '';
   document.getElementById('ata-assunto-texto').value = '';
-  document.getElementById('ata-doc-nome').textContent = '';
-  document.getElementById('ata-doc-input').value = '';
-  document.getElementById('ata-foto-galeria').value = '';
-  document.getElementById('assunto-texto-panel').style.display = 'block';
-  document.getElementById('assunto-doc-panel').style.display = 'none';
-  document.getElementById('assunto-foto-panel').style.display = 'none';
-  document.getElementById('ata-foto-preview-wrap').style.display = 'none';
-  document.querySelectorAll('.assunto-tab').forEach((t,i)=>t.classList.toggle('active',i===0));
+  limparDocAta(); limparFotoAta();
   renderAtaAuxiliares();
   document.getElementById('modal-ata').classList.add('open');
 }
@@ -7845,28 +7903,20 @@ function editarAta(id) {
   const ata = DB.atas.find(a => a.id === id);
   if (!ata) return;
   _ataEditandoId = id;
-  _ataDocData = null; _ataDocNome = null; _ataFotoData = null;
   document.getElementById('modal-ata-titulo').textContent = '✏️ Editar Ata';
   document.getElementById('ata-data').value = ata.data;
-  const tipo = ata.assunto.tipo || 'texto';
-  _ataAssuntoTab = tipo;
-  document.getElementById('assunto-texto-panel').style.display = tipo === 'texto' ? 'block' : 'none';
-  document.getElementById('assunto-doc-panel').style.display  = tipo === 'doc'   ? 'block' : 'none';
-  document.getElementById('assunto-foto-panel').style.display = tipo === 'foto'  ? 'block' : 'none';
-  document.querySelectorAll('.assunto-tab').forEach(t => {
-    const m = t.getAttribute('onclick') && t.getAttribute('onclick').match(/'([^']+)'/);
-    t.classList.toggle('active', m && m[1] === tipo);
-  });
-  if (tipo === 'texto') {
-    document.getElementById('ata-assunto-texto').value = ata.assunto.conteudo || '';
-  } else if (tipo === 'doc') {
-    _ataDocData = ata.assunto.conteudo;
-    _ataDocNome = ata.assunto.nome || '';
-    document.getElementById('ata-doc-nome').textContent = _ataDocNome;
-  } else if (tipo === 'foto') {
-    _ataFotoData = ata.assunto.conteudo;
-    const prev = document.getElementById('ata-foto-preview');
-    if (prev) { prev.src = _ataFotoData; document.getElementById('ata-foto-preview-wrap').style.display = 'block'; }
+  limparDocAta(); limparFotoAta();
+  const p = _ataPartes(ata);
+  document.getElementById('ata-assunto-texto').value = p.texto || '';
+  if (p.doc) {
+    _ataDocData = p.doc; _ataDocNome = p.docNome || 'documento';
+    document.getElementById('ata-doc-nome').textContent = '📄 ' + _ataDocNome;
+    document.getElementById('ata-doc-remover').style.display = 'inline-flex';
+  }
+  if (p.foto) {
+    _ataFotoData = p.foto;
+    document.getElementById('ata-foto-preview').src = _ataFotoData;
+    document.getElementById('ata-foto-preview-wrap').style.display = 'block';
   }
   renderAtaAuxiliares(ata.auxiliares || []);
   fecharModalAtaDetalhe();
@@ -7890,19 +7940,22 @@ function verAtaDetalhe(id) {
     return m ? m.nome : '';
   }).filter(Boolean);
 
-  var assuntoHTML = '';
-  if (ata.assunto.tipo === 'texto') {
-    assuntoHTML = '<div style="background:var(--bg);border-radius:9px;padding:12px;font-size:.88rem;white-space:pre-wrap;">' + ata.assunto.conteudo + '</div>';
-  } else if (ata.assunto.tipo === 'doc') {
-    var docNome = ata.assunto.nome || 'documento';
-    assuntoHTML = '<div style="background:var(--bg);border-radius:9px;padding:12px;text-align:center;">' +
-      '<div style="font-size:1.5rem;">📎</div>' +
-      '<div style="font-size:.85rem;font-weight:700;margin:6px 0;">' + docNome + '</div>' +
-      '<a href="' + ata.assunto.conteudo + '" download="' + docNome + '" class="btn btn-secondary btn-sm">⬇️ Baixar</a>' +
-      '</div>';
-  } else {
-    assuntoHTML = '<img src="' + ata.assunto.conteudo + '" style="width:100%;border-radius:9px;max-height:300px;object-fit:contain;"/>';
+  var p = _ataPartes(ata), assuntoHTML = '';
+  if (p.texto) {
+    assuntoHTML += '<div style="background:var(--bg);border-radius:9px;padding:12px;font-size:.88rem;white-space:pre-wrap;margin-bottom:8px;">' + escapeHtmlAta(p.texto) + '</div>';
   }
+  if (p.doc) {
+    var docNome = p.docNome || 'documento';
+    assuntoHTML += '<div style="background:var(--bg);border-radius:9px;padding:12px;text-align:center;margin-bottom:8px;">' +
+      '<div style="font-size:1.5rem;">📎</div>' +
+      '<div style="font-size:.85rem;font-weight:700;margin:6px 0;">' + escapeHtmlAta(docNome) + '</div>' +
+      '<a href="' + p.doc + '" download="' + escapeHtmlAta(docNome) + '" class="btn btn-secondary btn-sm">⬇️ Baixar</a>' +
+      '</div>';
+  }
+  if (p.foto) {
+    assuntoHTML += '<img src="' + p.foto + '" style="width:100%;border-radius:9px;max-height:300px;object-fit:contain;"/>';
+  }
+  if (!assuntoHTML) assuntoHTML = '<div style="color:var(--text-muted);font-size:.85rem;">—</div>';
 
   var auxBadges = auxNomes.length
     ? auxNomes.map(function(n){ return '<span style="display:inline-block;background:#fef3c7;color:#d97706;border-radius:20px;padding:2px 10px;font-weight:700;font-size:.8rem;margin:2px;">' + n + '</span>'; }).join('')
@@ -7961,6 +8014,28 @@ function onAtaDocSelected(e) {
   r.onload = ev => { _ataDocData = ev.target.result; };
   r.readAsDataURL(file);
   document.getElementById('ata-doc-nome').textContent = '📄 ' + file.name;
+  document.getElementById('ata-doc-remover').style.display = 'inline-flex';
+}
+
+function limparDocAta() {
+  _ataDocData = null; _ataDocNome = null;
+  document.getElementById('ata-doc-nome').textContent = '';
+  document.getElementById('ata-doc-input').value = '';
+  document.getElementById('ata-doc-remover').style.display = 'none';
+}
+
+function escapeHtmlAta(s) {
+  return String(s).replace(/[&<>"]/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; });
+}
+
+// Texto, documento e foto da ata. Atas antigas tinham só um ({tipo, conteudo});
+// as novas guardam os três juntos ({texto, doc, docNome, foto}).
+function _ataPartes(ata) {
+  var a = (ata && ata.assunto) || {};
+  if (a.tipo === 'varios') return { texto: a.texto || '', doc: a.doc || null, docNome: a.docNome || '', foto: a.foto || null };
+  if (a.tipo === 'doc') return { texto: '', doc: a.conteudo || null, docNome: a.nome || '', foto: null };
+  if (a.tipo === 'foto') return { texto: '', doc: null, docNome: '', foto: a.conteudo || null };
+  return { texto: a.conteudo || '', doc: null, docNome: '', foto: null };
 }
 
 function onAtaFotoSelected(e) {
@@ -7998,18 +8073,9 @@ async function salvarAta() {
   const auxiliaresSelecionados = [...document.querySelectorAll('#ata-auxiliares-list input[type="checkbox"]:checked')]
     .map(cb => parseInt(cb.value));
 
-  let assunto = {};
-  if (_ataAssuntoTab === 'texto') {
-    const txt = document.getElementById('ata-assunto-texto').value.trim();
-    if (!txt) { showToast('Preencha o assunto!'); return; }
-    assunto = { tipo: 'texto', conteudo: txt };
-  } else if (_ataAssuntoTab === 'doc') {
-    if (!_ataDocData) { showToast('Selecione um documento!'); return; }
-    assunto = { tipo: 'doc', conteudo: _ataDocData, nome: _ataDocNome };
-  } else {
-    if (!_ataFotoData) { showToast('Tire ou selecione uma foto!'); return; }
-    assunto = { tipo: 'foto', conteudo: _ataFotoData };
-  }
+  const txt = document.getElementById('ata-assunto-texto').value.trim();
+  if (!txt && !_ataDocData && !_ataFotoData) { showToast('Coloque o assunto: texto, documento ou foto!'); return; }
+  const assunto = { tipo: 'varios', texto: txt, doc: _ataDocData || null, docNome: _ataDocData ? (_ataDocNome || 'documento') : '', foto: _ataFotoData || null };
 
   const ata = {
     id: Date.now(),
@@ -8069,10 +8135,13 @@ function _desenharAtas(atas) {
       var m = DB.todosMembros.find(function(x){ return x.id===id; });
       return m ? m.nome.split(' ')[0] : '';
     }).filter(Boolean).join(', ') || '—';
-    var tipoIcon = ata.assunto.tipo === 'texto' ? '✏️' : ata.assunto.tipo === 'doc' ? '📎' : '📷';
-    var resumo = ata.assunto.tipo === 'texto'
-      ? (ata.assunto.conteudo.substring(0,60) + (ata.assunto.conteudo.length > 60 ? '…' : ''))
-      : ata.assunto.tipo === 'doc' ? (ata.assunto.nome || 'Documento') : 'Foto anexada';
+    var p = _ataPartes(ata);
+    var tipoIcon = (p.texto ? '✏️' : '') + (p.doc ? '📎' : '') + (p.foto ? '📷' : '');
+    var pedacos = [];
+    if (p.texto) pedacos.push(escapeHtmlAta(p.texto.substring(0,60) + (p.texto.length > 60 ? '…' : '')));
+    if (p.doc) pedacos.push(escapeHtmlAta(p.docNome || 'Documento'));
+    if (p.foto) pedacos.push('Foto anexada');
+    var resumo = pedacos.join(' · ') || '—';
     var adminBtns = _isAdmin
       ? '<button class="ata-del-btn" onclick="event.stopPropagation();editarAta(' + ata.id + ')" title="Editar" style="background:#e0e7ff;color:#4f46e5;border-radius:8px;padding:5px 7px;border:none;cursor:pointer;font-size:1rem;">✏️</button>' +
         '<button class="ata-del-btn" onclick="event.stopPropagation();deletarAta(' + ata.id + ')" title="Excluir">🗑</button>'
@@ -13762,7 +13831,7 @@ const _GL_CONSULTAS = [
   { re: /\batas?\b/, nivel: 'logado', fazer: function(t, original) {
       if (/\b(nova|cria|criar|escreve|escrever|registra|registrar|lanca|lancar|faz|fazer|adiciona)\b/.test(t)) return null;
       var as = (DB.atas || []).filter(Boolean).sort(function(a, b){ return String(b.data).localeCompare(String(a.data)); });
-      var texto = function(a){ return a.assunto && a.assunto.tipo === 'texto' ? String(a.assunto.conteudo || '') : (a.assunto && a.assunto.nome ? '(documento: ' + a.assunto.nome + ')' : '(foto)'); };
+      var texto = function(a){ var p = _ataPartes(a), r = []; if (p.texto) r.push(p.texto); if (p.doc) r.push('(documento: ' + (p.docNome || 'documento') + ')'); if (p.foto) r.push('(foto)'); return r.join(' ') || '(sem assunto)'; };
       var data = _glDataConsulta(t), m = String(original).match(/\b(?:fala|falam|sobre|assunto|com a palavra)\s+(?:de |do |da |sobre )?(.+)$/i);
       if (data) as = as.filter(function(a){ return a.data === data; });
       else if (m) { var busca = _glNorm(m[1]); as = as.filter(function(a){ return _glNorm(texto(a)).indexOf(busca) >= 0; }); }
